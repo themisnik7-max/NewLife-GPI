@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { Sidebar, SIDEBAR_NAV_ITEMS } from "@/components/ui/Sidebar";
 
 vi.mock("@clerk/nextjs", () => ({
@@ -19,23 +18,24 @@ describe("Sidebar", () => {
     expect(screen.getByText("Villa Elytra")).toBeInTheDocument();
   });
 
-  it("renders every nav item as a visible, clickable button", () => {
+  it("renders every nav item as a visible link pointing at its route", () => {
     render(<Sidebar activeKey="overview" client={client} />);
 
     for (const item of SIDEBAR_NAV_ITEMS) {
-      expect(screen.getByRole("button", { name: item.label })).toBeVisible();
+      const link = screen.getByRole("link", { name: item.label });
+      expect(link).toBeVisible();
+      expect(link).toHaveAttribute("href", item.href);
     }
   });
 
-  it("marks the active nav item and calls onNavigate with its key when another is clicked", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    render(<Sidebar activeKey="overview" client={client} onNavigate={onNavigate} />);
+  it("marks only the active nav item with aria-current", () => {
+    render(<Sidebar activeKey="payments" client={client} />);
 
-    expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page");
-
-    await user.click(screen.getByRole("button", { name: "Payments & expenses" }));
-    expect(onNavigate).toHaveBeenCalledWith("payments");
+    expect(screen.getByRole("link", { name: "Payments & expenses" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute("aria-current");
   });
 
   it("renders Clerk's UserButton wired to redirect to / after sign-out", () => {
