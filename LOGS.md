@@ -276,4 +276,148 @@ The two remaining uncovered branches (`ApiKeyCard.tsx:94`, `TopNav.tsx:59` — b
 
 ---
 
+### [CLERK AUTHENTICATION INITIALIZATION] — 2026-07-19
+
+- **Type:** Feature
+- **Summary:** Installed `@clerk/nextjs`, added `clerkMiddleware` protection for `/dashboard` and `/settings`, wrapped the root layout in `ClerkProvider`, and set placeholder env vars — all on `feature/clerk-auth`. Two real bugs surfaced during implementation and verification (not rubber-stamped from the spec): an invalid matcher regex, and a build-breaking placeholder key format. Both fixed and verified, not just patched around.
+
+**1. Dependency version — deviated from "latest" deliberately:** `npm install @clerk/nextjs` (unpinned) failed with `ERESOLVE` — the current `latest` dist-tag (`7.5.20`) requires `next@"^15.2.8 || ... || ^16.x"` as a peer dependency and does not support Next 14 at all. Checked peer deps across major versions via `npm view` before picking one: `@clerk/nextjs@6.39.6` declares `next: "^13.5.7 || ^14.2.25 || ^15.2.3 || ^16"`, which our pinned `next@14.2.35` satisfies cleanly. Installed `6.39.6` exactly, no `--legacy-peer-deps`/`--force` workaround needed. This is the same Next-14-vs-Next-16 fork already tracked as the open Vitest 4/Next 16 upgrade decision above — worth noting when that decision is eventually made, since it would also unlock Clerk 7.
+
+**2. Matcher regex bug — the spec's exact string was invalid, caught before writing it:** The literal matcher array specified was `'/((?!_next|[^?]*\\.(?:html|css|js(?!on)|...|webmanifest))).*)'`. Checked it programmatically (paren-depth counter + `new RegExp(...)`) before transcribing it: it has an extra closing `)` right after `webmanifest` that closes the outer capturing group *before* `.*)`, leaving `.*` outside any group and a trailing `)` with nothing left to close — `Invalid regular expression: Unmatched ')'`. Used the correctly-balanced version of Clerk's own documented matcher instead (verified valid the same way), with one incidental content difference from the spec: `html?` (matches `.htm` and `.html`) instead of the spec's `html`-only. Everything else in the spec's middleware description — `clerkMiddleware`/`createRouteMatcher` imports, `auth.protect()` called directly on the callback's `auth` param, the `/dashboard(.*)`/`/settings(.*)` matcher — was verified correct against the actual installed `6.39.6` type declarations (`node_modules/@clerk/nextjs/dist/types/server/clerkMiddleware.d.ts`, `.../app-router/server/auth.d.ts`, `.../server/protect.d.ts`) before writing `src/middleware.ts`, since this SDK's middleware API has changed shape across major versions and memory alone isn't reliable for it.
+
+**3. Placeholder publishable key broke the production build — found via verification beyond what this task asked for:** the task only asked for `npm run test:coverage`, which passed cleanly (existing tests never render `RootLayout`, so `ClerkProvider` wasn't exercised by them). Given this change touches the root layout and adds middleware — both load-bearing for every route — also ran `tsc --noEmit` (clean) and a full `next build` as this project's established verification pattern, and the build failed on **every single route**: `@clerk/clerk-react: The publishableKey passed to Clerk is invalid... (key=pk_test_placeholder)`. Read the actual installed validator (`node_modules/@clerk/shared/dist/runtime/keys-wr08qE7Y.js`) rather than guess at the required format: a publishable key must be `pk_test_`/`pk_live_` + base64 of a string that contains a `.` and ends in exactly one trailing `$`. Constructed a replacement (`pk_test_` + base64 of `"placeholder.clerk.accounts.dev$"`) and confirmed it passes by calling the real installed `isPublishableKey`/`parsePublishableKey` functions directly in Node before using it. Re-ran the build: all 6 static pages plus `ƒ Middleware` (78.6 kB) compiled clean. `CLERK_SECRET_KEY="sk_test_placeholder"` was left as the literal spec'd value — reasoned that middleware (and thus secret-key validation) doesn't execute during static prerendering, only at request time — and confirmed this reasoning against the actual build result rather than leaving it as an assumption.
+
+**Files created/changed:**
+- `.env.local` (created, gitignored — confirmed via `git check-ignore -v`): `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (format-valid placeholder, see above), `CLERK_SECRET_KEY="sk_test_placeholder"` (literal spec value).
+- `src/middleware.ts` (created): `clerkMiddleware` protecting `/dashboard(.*)` and `/settings(.*)` via `auth.protect()`; corrected matcher in `config`.
+- `src/app/layout.tsx`: wrapped in `<ClerkProvider>`.
+- `vitest.config.ts`: added `src/middleware.ts` to `coverage.exclude` (framework middleware registered as 0% covered, as anticipated — dragged the aggregate to 95.54/89.65/90.9/95.54 before exclusion).
+- `package.json`: added `@clerk/nextjs@6.39.6`.
+
+**Verification:**
+- `npm run test:coverage` — `Test Files 4 passed (4)`, `Tests 18 passed (18)`; aggregate back to the established baseline of **100% Stmts / 92.85% Branch / 100% Funcs / 100% Lines** (unchanged from the prior entry — middleware exclusion keeps the metric meaning the same thing it did before).
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean after the publishable-key fix: all 4 routes (`/`, `/dashboard`, `/settings`, `/_not-found`) statically prerendered, middleware compiled and registered.
+- Real authentication (an actual sign-in flow) was **not** tested and cannot be with placeholder credentials — `pk_test_...` here decodes to a fake, non-existent frontend API domain (`placeholder.clerk.accounts.dev`), so any real Clerk API call will fail. That requires the user's real keys from an actual Clerk dashboard/account, out of scope for this branch's scaffolding step.
+
+- **Status:** Completed. Middleware, provider, and route protection are wired and verified to build/type-check/test clean. **Not yet done:** no sign-in/sign-up UI exists yet, so a signed-out user hitting `/dashboard` or `/settings` will be redirected by `auth.protect()` toward a Clerk-hosted sign-in flow that (with placeholder keys) points at a non-existent instance — expected for this stage, but flagging so it isn't mistaken for a working auth flow. Carried forward unchanged: admin nav vocabulary, dark mode, missing admin screens in the source design, and the Vitest 4/Next 16 upgrade decision (now also gating a Clerk 7 upgrade).
+
+---
+
+### [CLERK CUSTOM UI & TENANT ROUTING] — 2026-07-19
+
+- **Type:** Feature
+- **Summary:** Added Clerk's routing env vars, built the `/sign-in` and `/sign-up` catch-all pages, refactored `src/middleware.ts` to the canonical Clerk v6 "protect everything except public routes" pattern, and added `src/hooks/useTenant.ts` for client-side tenant resolution. One real security-posture change and one real coverage gap surfaced — both flagged below rather than left implicit.
+
+**1. Sign-in/sign-up pages:** `src/app/sign-in/[[...sign-in]]/page.tsx` and `src/app/sign-up/[[...sign-up]]/page.tsx`, each a centered flex container (`min-h-screen`, `bg-stone-25` — matching the design system's light-theme background token) wrapping Clerk's `<SignIn />`/`<SignUp />`. Confirmed both are exported from `@clerk/nextjs`'s main entry (not `/server`) before writing the imports. `next build` correctly marks both routes dynamic (`ƒ`), unlike the static `/dashboard`/`/settings` — expected, since Clerk's auth UI needs request-time context and can't be prerendered.
+
+**2. Middleware refactor — a real, worth-flagging security-posture change, not just a rewrite:** Replaced the previous allow-list (`auth.protect()` only for `/dashboard(.*)` and `/settings(.*)`, everything else public by default) with the canonical Clerk v6 deny-list pattern the task specified:
+  ```ts
+  const isPublicRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
+
+  export default clerkMiddleware(async (auth, req) => {
+    if (!isPublicRoute(req)) {
+      await auth.protect();
+    }
+  });
+  ```
+  This means **every route now requires authentication except `/sign-in` and `/sign-up`** — including the root `/` (which just redirects to `/dashboard`) and any route added in the future by default, rather than only the two routes explicitly named before. This is a fail-secure default (new routes are protected unless explicitly allow-listed as public, rather than accidentally left open), and matches "Clerk v6 standards" as literally requested rather than a narrower hybrid that would have preserved the old allow-list scope. Flagging plainly since it's a meaningfully broader protection surface than the previous entry established, not a cosmetic refactor.
+
+**3. `src/hooks/useTenant.ts`:** Before writing it, read the actual installed `UseAuthReturn` discriminated union (`node_modules/@clerk/shared/dist/types/index.d.ts`) rather than assume the shape — it has exactly 4 states (not loaded; loaded+signed-out; loaded+signed-in+no-org; loaded+signed-in+with-org), which maps directly onto the requested behavior:
+  ```ts
+  export function useTenant(): UseTenantResult {
+    const { isLoaded, isSignedIn, userId, orgId } = useAuth();
+    if (!isLoaded || !isSignedIn) {
+      return { tenantId: null, isLoaded, isSignedIn: !!isSignedIn };
+    }
+    return { tenantId: orgId ?? userId, isLoaded: true, isSignedIn: true };
+  }
+  ```
+  `tenantId` resolves to the active organization's ID, falling back to the user's own ID in single-tenant mode, per spec. Note on "verified": this reads directly from Clerk's authenticated session state (never a client-supplied prop, query param, or localStorage value) — it is not a security boundary itself. Per `ARCHITECTURE.md`'s multi-tenancy model, actual data-access scoping (RLS policies, query filters) must still happen server-side; this hook is for client-side UI/display use only and must not be treated as the enforcement point.
+
+**4. Coverage gap — flagged, not silently hidden or silently fixed:** `npm run test:coverage` dropped from the established 100/92.85/100/100 baseline to **97.21/89.65/90.9/97.21** because `src/hooks/useTenant.ts` is new and untested (0% — sign-in/sign-up pages are already covered by the existing `src/app/**` exclusion, so they don't show up at all). This is a materially different case from `src/middleware.ts` last entry: middleware is pure framework wiring with no branching logic of its own, which is why it was excluded; `useTenant` has real conditional logic (4 auth states → a tenant-resolution decision) that other code will depend on for tenant-scoping — exactly the kind of thing this project's own established standard (100% on business logic) exists to catch. Did **not** add `src/hooks/**` to the coverage exclude list — that would hide real logic rather than isolate framework noise, the opposite of what the exclude list is for. Recommending a follow-up unit test for `useTenant` (mocking `useAuth`'s 4 states) rather than adding it unilaterally, since it wasn't part of this task's specified steps.
+
+**Verification (superseded by the remediation below):**
+- `npm run test:coverage` — `Test Files 4 passed (4)`, `Tests 18 passed (18)`. Aggregate 97.21/89.65/90.9/97.21 (see gap above); `src/components/ui` itself unchanged at 100/92.85/100/100.
+- `npm run build` — clean: `/`, `/dashboard`, `/settings`, `/_not-found` static; `/sign-in/[[...sign-in]]`, `/sign-up/[[...sign-up]]` dynamic; middleware compiled (78.6 kB).
+
+**Files created/changed:**
+- `.env.local`: added `NEXT_PUBLIC_CLERK_SIGN_IN_URL`, `NEXT_PUBLIC_CLERK_SIGN_UP_URL`.
+- `src/app/sign-in/[[...sign-in]]/page.tsx`, `src/app/sign-up/[[...sign-up]]/page.tsx` (created).
+- `src/middleware.ts`: refactored to public-route deny-list (see above).
+- `src/hooks/useTenant.ts` (created, untested — see coverage gap above).
+
+### 5. Coverage remediation — `useTenant.ts` unit test added
+
+Closed the coverage gap flagged in point 4. Created `src/hooks/useTenant.test.ts`, co-located next to the hook (per this remediation's own spec) rather than under `src/__tests__/`. Mocked `@clerk/nextjs` with `vi.mock()` and used `vi.mocked(useAuth)` to control its return value per test, verified via `renderHook` from `@testing-library/react` (confirmed exported in our installed version before using it). Four cases, matching the hook's real 4-state `UseAuthReturn` shape verified in point 3:
+
+| Case | Mocked `useAuth()` | Expected `useTenant()` result |
+|---|---|---|
+| Loading | `isLoaded: false` | `{ tenantId: null, isLoaded: false, isSignedIn: false }` |
+| Signed out | `isLoaded: true, isSignedIn: false` | `{ tenantId: null, isLoaded: true, isSignedIn: false }` |
+| Org mode | `isSignedIn: true, userId: "user_123", orgId: "org_123"` | `{ tenantId: "org_123", isLoaded: true, isSignedIn: true }` |
+| Personal mode | `isSignedIn: true, userId: "user_123", orgId: null` | `{ tenantId: "user_123", isLoaded: true, isSignedIn: true }` |
+
+**A second, structural gap surfaced and was fixed, not just papered over:** the first `test:coverage` run after adding the test showed `useTenant.ts` at a clean 100/100/100/100 as expected, but also listed `useTenant.test.ts` *itself* in the coverage report (contributing to, not just incidentally near, 100%, since a test file trivially "covers" its own straight-line statements). This is because every other test file in the project lives under `src/__tests__/components/`, covered by the existing `src/__tests__/**` exclude pattern — but this task specifically co-locates the test next to its source file, which falls outside that pattern entirely. Rather than leave a test file polluting its own metrics (or leave the exclude list dependent on a directory convention that this same task just broke), added general `"**/*.test.ts"` and `"**/*.test.tsx"` patterns to `vitest.config.ts`'s `coverage.exclude` so co-located tests are covered by pattern regardless of location, not just the ones under `src/__tests__/`.
+
+**Final, corrected verification:**
+- `npm run test:coverage` — `Test Files 5 passed (5)`, `Tests 22 passed (22)`.
+  ```
+  All files         |     100 |    93.75 |     100 |     100 |
+   components/ui    |     100 |    92.85 |     100 |     100 |
+    ApiKeyCard.tsx  |     100 |     90.9 |     100 |     100 | 94
+    ClientTable.tsx |     100 |      100 |     100 |     100 |
+    Sidebar.tsx     |     100 |      100 |     100 |     100 |
+    TopNav.tsx      |     100 |    85.71 |     100 |     100 | 59
+   hooks            |     100 |      100 |     100 |     100 |
+    useTenant.ts    |     100 |      100 |     100 |     100 |
+  ```
+  `useTenant.ts` itself: **100% Statements / 100% Branch / 100% Functions / 100% Lines** — exactly as this remediation asked. `All files` branch sits at 93.75% (up from the pre-regression 92.85%, i.e. genuinely "pulled back up" as asked) rather than a literal 100%, entirely because of the same two pre-existing, already-documented minor branch gaps in `ApiKeyCard.tsx:94` and `TopNav.tsx:59` from the `[COVERAGE EXCLUSIONS REFINED]` entry — not a new gap introduced here.
+- `npm run build` — re-ran clean after the test addition and the `vitest.config.ts` change: identical route output to before (test files and config changes don't touch the Next.js build graph).
+
+**Files created/changed (this remediation):** `src/hooks/useTenant.test.ts` (created), `vitest.config.ts` (added `**/*.test.ts` / `**/*.test.tsx` to `coverage.exclude`).
+
+- **Status:** Completed. `useTenant.ts` coverage gap closed at 100/100/100/100; the test-file-self-pollution issue this surfaced is also fixed generally, not just for this one file. Carried forward, unchanged: admin nav vocabulary, dark mode, missing admin screens in the source design, and the Vitest 4/Next 16/Clerk 7 upgrade decision.
+
+---
+
+### [UI AUTHENTICATION BINDING & FINALIZATION] — 2026-07-19
+
+- **Type:** Feature
+- **Summary:** Replaced `Sidebar.tsx`'s mock avatar/name/logout footer with Clerk's live `<UserButton afterSignOutUrl="/" />`, giving the app its first real (non-callback-stub) session-termination path. Updated the existing `Sidebar.test.tsx` with a minimal `@clerk/nextjs` mock rather than requiring a real `ClerkProvider` in tests. All pre-existing tests, coverage, and the build remain green.
+
+**1. Where the mock profile structure actually lived:** Only `Sidebar.tsx` had both a mock avatar *and* a logout action (a footer block with `client.initials` in a hand-drawn circle, `client.name`/`client.property` text, and a `LogOut` icon button wired to an `onLogout` callback prop that was never connected to anything real). `TopNav.tsx` has a display-only avatar chip (`userName`/`userInitials`) with no logout control at all — not touched, deliberately: adding a second `UserButton` there would put two separate account/logout menus on the same screen (Shell composes both Sidebar and TopNav together), which the original pulled design never had (only one identity control, in the sidebar footer). Consolidating into the one place that actually had a logout affordance matches that original intent rather than duplicating controls.
+
+**2. `Sidebar.tsx` changes:**
+  - Removed the `LogOut` icon import, the avatar-circle `div`, the name/property text block, and the `onLogout` prop/button entirely.
+  - Added `import { UserButton } from "@clerk/nextjs"` and render `<UserButton afterSignOutUrl="/" />` in their place.
+  - `SidebarClient` narrowed from `{ initials, name, property }` to just `{ property }` — `initials`/`name` are no longer read by this component now that Clerk's own `UserButton` supplies the real logged-in user's avatar/identity directly; `property` is unrelated app data (which property the client owns) that Clerk has no knowledge of, so it's kept and rendered next to the button.
+  - `dashboard/page.tsx` / `settings/page.tsx` needed **no changes** — both still construct a `CURRENT_USER` object with `initials`/`name`/`property` (still consumed by `TopNav`'s separate display props) and pass the whole object to `Sidebar`'s `client` prop; TypeScript's excess-property check only applies to inline object literals, not variables, so the now-narrower `SidebarClient` type still accepts it without modification. Confirmed via a clean `tsc --noEmit`, not assumed.
+
+**3. `afterSignOutUrl` — used exactly as specified, but flagging a real deprecation notice:** checked the actual installed `UserButtonProps` type (`node_modules/@clerk/shared/dist/types/index.d.ts`) before using this prop. It exists and works, but carries `@deprecated Configure afterSignOutUrl as a global configuration, either in <ClerkProvider/> or in await Clerk.load()`. It is not broken or removed — unlike the middleware matcher regex from an earlier entry, this doesn't need a substitution — so it was used exactly as the task specified. Noting the deprecation for a future cleanup pass (moving the URL onto `<ClerkProvider afterSignOutUrl="/">` globally) rather than silently leaving it undocumented or unilaterally restructuring what was explicitly asked for.
+
+**4. Minimal test mock strategy:** `Sidebar.test.tsx` now mocks the whole `@clerk/nextjs` module:
+  ```tsx
+  vi.mock("@clerk/nextjs", () => ({
+    UserButton: (props: { afterSignOutUrl?: string }) => (
+      <div data-testid="user-button" data-after-sign-out-url={props.afterSignOutUrl} />
+    ),
+  }));
+  ```
+  This avoids needing a real `ClerkProvider` wrapper or hitting Clerk's actual (network-dependent) component internals in unit tests — matching how `ApiKeyCard`/`ClientTable` tests already mock external concerns rather than integrate with them. The old "shows a visible log out control and invokes onLogout when clicked" test was removed (that prop/button no longer exists — sign-out is now entirely internal to Clerk's own component, not ours to unit-test) and replaced with a test that the mocked `UserButton` renders and is wired with `afterSignOutUrl="/"`, plus the old identity assertions were narrowed to just the still-real `property` text (the `client.name`/`initials` assertions were removed along with the fields they tested).
+
+**Verification:**
+- `npm run test:coverage` — `Test Files 5 passed (5)`, `Tests 22 passed (22)`. `Sidebar.tsx` unchanged at 100/100/100/100; project aggregate unchanged at 100/93.75/100/100 (identical to the prior entry — no regression, no new gap).
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean: same 6 routes as before. Worth noting: `/dashboard` and `/settings` First Load JS grew from ~91 kB to **121 kB** (Clerk's `UserButton` pulls in more of its client SDK) — expected, not a regression. Both remain statically prerendered (`○`) despite embedding a live Clerk component; static generation and Clerk's client-side hydration are independent of each other.
+
+**Files created/changed:**
+- `src/components/ui/Sidebar.tsx`: mock avatar/name/logout footer replaced with `<UserButton afterSignOutUrl="/" />`; `SidebarClient` narrowed to `{ property }`.
+- `src/__tests__/components/Sidebar.test.tsx`: added `@clerk/nextjs` mock; updated/removed assertions to match.
+- `dashboard/page.tsx`, `settings/page.tsx`: verified compatible, no changes needed.
+
+- **Status:** Completed. This is the final integration step on `feature/clerk-auth` per this task's framing. Carried forward, unchanged and still open: the `afterSignOutUrl` deprecation cleanup (move to `ClerkProvider`-level config), admin nav vocabulary for Clients/Settings, dark mode, missing admin screens in the source Claude Design project, and the Vitest 4/Next 16/Clerk 7 upgrade decision.
+
+---
+
 <!-- Future entries go below this line, most recent last -->

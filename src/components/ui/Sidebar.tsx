@@ -7,9 +7,9 @@ import {
   Wallet,
   KeyRound,
   User,
-  LogOut,
   type LucideIcon,
 } from "lucide-react";
+import { UserButton } from "@clerk/nextjs";
 
 export interface SidebarNavItem {
   key: string;
@@ -27,8 +27,6 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
 ];
 
 export interface SidebarClient {
-  initials: string;
-  name: string;
   property: string;
 }
 
@@ -36,10 +34,9 @@ export interface SidebarProps {
   activeKey: string;
   client: SidebarClient;
   onNavigate?: (key: string) => void;
-  onLogout?: () => void;
 }
 
-export function Sidebar({ activeKey, client, onNavigate, onLogout }: SidebarProps) {
+export function Sidebar({ activeKey, client, onNavigate }: SidebarProps) {
   return (
     <nav
       aria-label="Primary"
@@ -74,23 +71,10 @@ export function Sidebar({ activeKey, client, onNavigate, onLogout }: SidebarProp
       </ul>
 
       <div className="flex items-center gap-2.5 border-t border-white/10 pt-4">
-        <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-aegean-400 text-[13px] font-bold text-white">
-          {client.initials}
+        <UserButton afterSignOutUrl="/" />
+        <div className="flex-1 text-[13px] font-normal text-aegean-200">
+          {client.property}
         </div>
-        <div className="flex-1 text-[13px] font-semibold leading-tight text-white">
-          {client.name}
-          <div className="text-[11px] font-normal text-aegean-200">
-            {client.property}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onLogout}
-          aria-label="Log out"
-          className="flex h-8 w-8 items-center justify-center rounded-md text-aegean-200 transition-colors hover:bg-white/10 hover:text-white"
-        >
-          <LogOut size={16} aria-hidden="true" />
-        </button>
       </div>
     </nav>
   );

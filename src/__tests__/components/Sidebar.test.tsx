@@ -3,16 +3,20 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar, SIDEBAR_NAV_ITEMS } from "@/components/ui/Sidebar";
 
-const client = { initials: "MP", name: "Maria Papadopoulos", property: "Villa Elytra" };
+vi.mock("@clerk/nextjs", () => ({
+  UserButton: (props: { afterSignOutUrl?: string }) => (
+    <div data-testid="user-button" data-after-sign-out-url={props.afterSignOutUrl} />
+  ),
+}));
+
+const client = { property: "Villa Elytra" };
 
 describe("Sidebar", () => {
-  it("renders the brand mark and current client identity", () => {
+  it("renders the brand mark and the current client's property", () => {
     render(<Sidebar activeKey="overview" client={client} />);
 
     expect(screen.getByText("NewLife GPI")).toBeInTheDocument();
-    expect(screen.getByText("Maria Papadopoulos")).toBeInTheDocument();
     expect(screen.getByText("Villa Elytra")).toBeInTheDocument();
-    expect(screen.getByText("MP")).toBeInTheDocument();
   });
 
   it("renders every nav item as a visible, clickable button", () => {
@@ -34,15 +38,11 @@ describe("Sidebar", () => {
     expect(onNavigate).toHaveBeenCalledWith("payments");
   });
 
-  it("shows a visible log out control and invokes onLogout when clicked", async () => {
-    const user = userEvent.setup();
-    const onLogout = vi.fn();
-    render(<Sidebar activeKey="overview" client={client} onLogout={onLogout} />);
+  it("renders Clerk's UserButton wired to redirect to / after sign-out", () => {
+    render(<Sidebar activeKey="overview" client={client} />);
 
-    const logoutButton = screen.getByRole("button", { name: "Log out" });
-    expect(logoutButton).toBeVisible();
-
-    await user.click(logoutButton);
-    expect(onLogout).toHaveBeenCalledTimes(1);
+    const userButton = screen.getByTestId("user-button");
+    expect(userButton).toBeVisible();
+    expect(userButton).toHaveAttribute("data-after-sign-out-url", "/");
   });
 });
