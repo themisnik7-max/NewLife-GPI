@@ -1,7 +1,9 @@
+import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { PropertyAssetCard } from "@/components/ui/PropertyAssetCard";
-import { MOCK_OWNED_PROPERTY } from "@/lib/projects";
+import { getCurrentTenantId } from "@/lib/auth/currentTenant";
+import { getOwnedProperty } from "@/lib/data/propertyOwnership";
 
 const CURRENT_USER = {
   initials: "MP",
@@ -9,7 +11,14 @@ const CURRENT_USER = {
   property: "Villa Elytra",
 };
 
-export default function PropertyPage() {
+export default async function PropertyPage() {
+  const { getToken } = await auth();
+  // Fetched through Supabase PostgREST (RLS-enforced), not Prisma — see
+  // ARCHITECTURE.md's "Clerk ↔ Supabase Third-Party Auth" section.
+  const [token, tenantId] = await Promise.all([getToken(), getCurrentTenantId()]);
+  // Same "no synced users row yet" recoverable state as dashboard/projects/page.tsx.
+  const ownedProperty = tenantId ? await getOwnedProperty(token, tenantId) : null;
+
   return (
     <div className="flex min-h-screen">
       <Sidebar activeKey="property" client={{ property: CURRENT_USER.property }} />
@@ -21,7 +30,11 @@ export default function PropertyPage() {
           userInitials={CURRENT_USER.initials}
         />
         <main className="flex-1 bg-stone-50 p-8">
-          <PropertyAssetCard property={MOCK_OWNED_PROPERTY} />
+          {ownedProperty ? (
+            <PropertyAssetCard property={ownedProperty} />
+          ) : (
+            <p className="text-sm text-stone-500">No property is currently assigned to your account.</p>
+          )}
         </main>
       </div>
     </div>

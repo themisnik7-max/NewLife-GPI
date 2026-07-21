@@ -44,7 +44,7 @@ export function PropertyAssetCard({ property }: PropertyAssetCardProps) {
 
       <div className="aspect-video w-full max-w-4xl overflow-hidden rounded-lg border border-stone-200 shadow-sm">
         <iframe
-          src={property.pptUrl}
+          src={property.pptUrl ?? undefined}
           title={`${property.name} presentation`}
           className="h-full w-full"
           loading="lazy"

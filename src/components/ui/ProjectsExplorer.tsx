@@ -3,15 +3,22 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { LayoutGrid, Table as TableIcon } from "lucide-react";
-import { MOCK_PROJECTS, type Project } from "@/lib/projects";
+import type { Project } from "@/lib/projects";
 
 export interface ProjectsExplorerProps {
-  projects?: Project[];
+  /**
+   * Required, not defaulted to mock data: this component no longer imports
+   * MOCK_PROJECTS itself (src/lib/projects.ts exports only client-safe
+   * types/mocks; real data comes from src/lib/data/projects.ts, which is
+   * server-only and cannot be imported here). Callers — the Server
+   * Component pages — fetch real data and pass it down.
+   */
+  projects: Project[];
 }
 
 type ViewMode = "table" | "grid";
 
-export function ProjectsExplorer({ projects = MOCK_PROJECTS }: ProjectsExplorerProps) {
+export function ProjectsExplorer({ projects }: ProjectsExplorerProps) {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<ViewMode>("table");
   const isGrid = view === "grid";
@@ -83,7 +90,7 @@ export function ProjectsExplorer({ projects = MOCK_PROJECTS }: ProjectsExplorerP
               <span className="text-sm text-stone-600">{project.address}</span>
               <span className="text-xs uppercase tracking-wide text-stone-500">{project.area}</span>
               <span className="mt-2 text-sm text-stone-700">
-                {project.availableUnits} of {project.units} units available
+                {project.availableUnits} of {project.totalUnits} units available
               </span>
             </Link>
           ))}
@@ -117,7 +124,7 @@ export function ProjectsExplorer({ projects = MOCK_PROJECTS }: ProjectsExplorerP
                   <td className="px-5 py-4 text-stone-700">{project.address}</td>
                   <td className="px-5 py-4 text-stone-500">{project.area}</td>
                   <td className="px-5 py-4 text-stone-700">
-                    {project.availableUnits} / {project.units}
+                    {project.availableUnits} / {project.totalUnits}
                   </td>
                   <td className="px-5 py-4 text-right">
                     <Link

@@ -9,9 +9,9 @@ export interface ProjectDetailProps {
 const SPEC_ROWS: Array<[label: string, getValue: (project: Project) => string]> = [
   ["Address", (project) => project.address],
   ["Area", (project) => project.area],
-  ["Total units", (project) => String(project.units)],
+  ["Total units", (project) => String(project.totalUnits)],
   ["Available units", (project) => String(project.availableUnits)],
-  ["Floor", (project) => project.floor],
+  ["Floor", (project) => String(project.floor)],
   ["Size", (project) => `${project.sqm} m²`],
   ["Energy class", (project) => project.energyClass],
   ["Contract date", (project) => project.contractDate],
@@ -49,7 +49,7 @@ export function ProjectDetail({ project }: ProjectDetailProps) {
 
       <div className="aspect-video w-full max-w-4xl overflow-hidden rounded-lg border border-stone-200 shadow-sm">
         <iframe
-          src={project.pptUrl}
+          src={project.pptUrl ?? undefined}
           title={`${project.name} presentation`}
           className="h-full w-full"
           loading="lazy"

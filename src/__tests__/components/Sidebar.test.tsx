@@ -3,9 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { Sidebar, SIDEBAR_NAV_ITEMS } from "@/components/ui/Sidebar";
 
 vi.mock("@clerk/nextjs", () => ({
-  UserButton: (props: { afterSignOutUrl?: string }) => (
-    <div data-testid="user-button" data-after-sign-out-url={props.afterSignOutUrl} />
-  ),
+  UserButton: () => <div data-testid="user-button" />,
 }));
 
 const client = { property: "Villa Elytra" };
@@ -38,11 +36,12 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute("aria-current");
   });
 
-  it("renders Clerk's UserButton wired to redirect to / after sign-out", () => {
+  it("renders Clerk's UserButton", () => {
+    // afterSignOutUrl is no longer passed here — it moved to <ClerkProvider>
+    // in src/app/layout.tsx (deprecated on UserButton itself; see the
+    // comment at its call site in Sidebar.tsx).
     render(<Sidebar activeKey="overview" client={client} />);
 
-    const userButton = screen.getByTestId("user-button");
-    expect(userButton).toBeVisible();
-    expect(userButton).toHaveAttribute("data-after-sign-out-url", "/");
+    expect(screen.getByTestId("user-button")).toBeVisible();
   });
 });

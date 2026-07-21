@@ -75,7 +75,10 @@ export function Sidebar({ activeKey, client }: SidebarProps) {
       </ul>
 
       <div className="flex items-center gap-2.5 border-t border-white/10 pt-4">
-        <UserButton afterSignOutUrl="/" />
+        {/* afterSignOutUrl moved to <ClerkProvider> in src/app/layout.tsx —
+        deprecated on UserButton itself (verified against Clerk's current
+        docs: github.com/clerk/javascript/pull/3544). */}
+        <UserButton />
         <div className="flex-1 text-[13px] font-normal text-aegean-200">
           {client.property}
         </div>

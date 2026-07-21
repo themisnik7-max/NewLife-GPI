@@ -7,7 +7,7 @@ import { MOCK_PROJECTS } from "@/lib/projects";
 describe("ProjectsExplorer", () => {
   it("filters visible projects by name, address, or area as the user types", async () => {
     const user = userEvent.setup();
-    render(<ProjectsExplorer />);
+    render(<ProjectsExplorer projects={MOCK_PROJECTS} />);
 
     for (const project of MOCK_PROJECTS) {
       expect(screen.getByText(project.name)).toBeInTheDocument();
@@ -27,7 +27,7 @@ describe("ProjectsExplorer", () => {
 
   it("filters by area even when the name and address don't match the query", async () => {
     const user = userEvent.setup();
-    render(<ProjectsExplorer />);
+    render(<ProjectsExplorer projects={MOCK_PROJECTS} />);
 
     const santoriniProject = MOCK_PROJECTS.find((project) => project.area === "Santorini")!;
     const search = screen.getByRole("textbox", { name: "Search projects" });
@@ -39,7 +39,7 @@ describe("ProjectsExplorer", () => {
 
   it("alternates between the table layout and the card grid layout when the toggle is clicked", async () => {
     const user = userEvent.setup();
-    render(<ProjectsExplorer />);
+    render(<ProjectsExplorer projects={MOCK_PROJECTS} />);
 
     expect(screen.getByRole("table")).toBeInTheDocument();
 
@@ -62,7 +62,7 @@ describe("ProjectsExplorer", () => {
 
   it("shows an empty-state message when no project matches the search", async () => {
     const user = userEvent.setup();
-    render(<ProjectsExplorer />);
+    render(<ProjectsExplorer projects={MOCK_PROJECTS} />);
 
     const search = screen.getByRole("textbox", { name: "Search projects" });
     await user.type(search, "nonexistent-project-xyz");

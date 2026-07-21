@@ -1,0 +1,352 @@
+// NewLife GPI — Prisma schema
+//
+// Sources reconciled here (see LOGS.md "Schema & RLS" entry for the full
+// cross-check against existing frontend code):
+//   - This message's Property / PaymentLedger / Role / RentalStage types
+//   - ARCHITECTURE.md: multi-tenancy mandate (every table needs tenant_id),
+//     the `encrypted_api_keys` BYOK table shape
+//   - CLAUDE.md (parent): the `ai_logs` self-observability table shape
+//
+// Auth identity: Clerk (not Supabase Auth). `User.id` is the Clerk user id
+// string (e.g. "user_2abc...") used as-is, not a generated UUID — see the
+// matching note in the RLS migration for how Postgres resolves this via
+// Supabase's Third-Party Auth (Clerk) JWT integration.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+// Connection URL lives in prisma.config.ts (Prisma 7 no longer supports
+// `url`/`directUrl` directly in the schema file's datasource block —
+// confirmed via `prisma validate`, not assumed).
+datasource db {
+  provider = "postgresql"
+}
+
+// ── Enums ────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  TENANT
+  INVESTOR
+}
+
+enum PropertyStatus {
+  PLANNING
+  UNDER_CONSTRUCTION
+  COMPLETED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+/// 10-stage purchase-through-occupancy roadmap. NOTE: this is NOT the same
+/// lifecycle as the 10 labels currently hardcoded in
+/// src/components/ui/RentalRoadmap.tsx ("Project Delivered" ... "Property
+/// Leased") — that component and this enum describe two different business
+/// processes that happen to both have 10 steps. Flagged in LOGS.md; the
+/// component needs updating to match this enum, it is not done here.
+enum RentalStage {
+  RESERVATION
+  SPA_SIGNED
+  LEGAL_REVIEW
+  VENDORS_ENGAGED
+  VISA_SUBMISSION
+  VISA_APPROVED
+  CONSTRUCTION_START
+  INTERIOR_CHOICES
+  HANDOVER
+  RENTAL_ACTIVE
+}
+
+/// Matches CLAUDE.md's `ai_logs.status` ("running|success|failed") as a real
+/// enum instead of an unconstrained varchar — a deliberate tightening, not a
+/// deviation; the original doc's three values are preserved exactly.
+enum AiLogStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+/// Shared status enum for both ConstructionMilestone and VisaStep — one
+/// generic progress state (not-started/in-progress/done) fits both domains
+/// identically, so this is deliberately not split into two near-duplicate
+/// enums the way PropertyStatus/PaymentStatus/ApiKeyStatus each describe a
+/// genuinely distinct domain concept.
+enum MilestoneStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+// ── Tenancy & identity ──────────────────────────────────────────
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users                  User[]
+  properties             Property[]
+  propertyOwnerships     PropertyOwnership[]
+  paymentLedgers         PaymentLedger[]
+  encryptedApiKeys       EncryptedApiKey[]
+  aiLogs                 AiLog[]
+  constructionMilestones ConstructionMilestone[]
+  visaSteps              VisaStep[]
+
+  @@map("tenants")
+}
+
+/// Mirrors the Clerk user, synced via Clerk webhooks (user.created/updated)
+/// using the Supabase service-role key, which bypasses RLS — end users never
+/// write to this table directly through the client. `id` is the Clerk user
+/// id itself (text, e.g. "user_2abc..."), not a generated UUID: it must
+/// equal the JWT `sub` claim exactly for RLS in the migration to resolve
+/// tenant_id correctly.
+model User {
+  id        String   @id @map("clerk_user_id")
+  tenantId  String   @map("tenant_id") @db.Uuid
+  email     String   @unique
+  role      Role     @default(TENANT)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Timestamp of the Clerk webhook event that last wrote this row (from
+  /// the event payload's own `data.updated_at`, not `updatedAt` above,
+  /// which is Prisma's own now()-on-write timestamp) — lets the webhook
+  /// handler detect and skip an out-of-order/stale event instead of
+  /// letting a delayed event overwrite a newer one. Nullable: rows that
+  /// existed before this column was added have no such record yet, which
+  /// correctly means "always process the next update," not "always stale."
+  lastSyncedAt DateTime? @map("last_synced_at")
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  propertyOwnerships PropertyOwnership[]
+  paymentLedgers     PaymentLedger[]
+  visaSteps          VisaStep[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ── Domain ───────────────────────────────────────────────────────
+
+model Property {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenantId       String         @map("tenant_id") @db.Uuid
+  name           String
+  address        String
+  area           String
+  totalUnits     Int            @map("total_units")
+  availableUnits Int            @map("available_units")
+  deliveryDate   DateTime       @map("delivery_date") @db.Date
+  contractDate   DateTime       @map("contract_date") @db.Date
+  floor          Int
+  sqm            Float
+  energyClass    String         @map("energy_class")
+  imageUrl       String         @map("image_url")
+  status         PropertyStatus @default(PLANNING)
+  mapUrl         String         @map("map_url")
+  pptUrl         String?        @map("ppt_url")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  tenant                 Tenant                  @relation(fields: [tenantId], references: [id])
+  propertyOwnerships     PropertyOwnership[]
+  paymentLedgers         PaymentLedger[]
+  constructionMilestones ConstructionMilestone[]
+
+  @@index([tenantId])
+  @@map("properties")
+}
+
+/// Join model between User and Property — not given explicitly in this
+/// message's type list, but required to store `rentalStage` at all (it has
+/// to belong to a specific user's specific property, not a bare scalar) and
+/// consistent with PaymentLedger already pairing userId + propertyId.
+model PropertyOwnership {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  userId      String      @map("user_id")
+  propertyId  String      @map("property_id") @db.Uuid
+  rentalStage RentalStage @default(RESERVATION) @map("rental_stage")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+  property Property @relation(fields: [propertyId], references: [id])
+
+  @@unique([userId, propertyId])
+  @@index([tenantId])
+  @@map("property_ownerships")
+}
+
+model PaymentLedger {
+  id            String        @id @default(uuid()) @db.Uuid
+  tenantId      String        @map("tenant_id") @db.Uuid
+  propertyId    String        @map("property_id") @db.Uuid
+  userId        String        @map("user_id")
+  amount        Float
+  dueDate       DateTime      @map("due_date") @db.Date
+  isDelayed     Boolean       @default(false) @map("is_delayed")
+  penaltyAmount Float         @default(0) @map("penalty_amount")
+  status        PaymentStatus @default(PENDING)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  /// Cumulative amount paid toward this installment so far. Added because
+  /// recordTenantPayment() (src/lib/data/ledgers.ts) needs to represent a
+  /// partial payment — the existing PENDING/PAID/OVERDUE status alone can
+  /// only say "fully paid or not," it can't say "€400 of €1000 paid." A
+  /// row is fully settled once amountPaid >= amount, at which point status
+  /// flips to PAID; a partial payment updates this without changing status.
+  /// Defaults to 0, not nullable: every existing row genuinely has "zero
+  /// paid so far" as its correct starting value, unlike lastSyncedAt above
+  /// (which had no correct non-null default to backfill).
+  amountPaid Float @default(0) @map("amount_paid")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  property Property @relation(fields: [propertyId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([propertyId])
+  @@index([userId])
+  @@map("payment_ledger")
+}
+
+/// Construction-progress tracker backing the "Construction" milestone-tracker
+/// screen (FRONTEND_SPEC.md: Card/ProgressBar/Badge/Tabs, MilestoneRow rows —
+/// label/progress/status per row). No userId: a milestone describes the
+/// property's own build progress, not any one buyer's data, so
+/// getPropertyMilestones() (src/lib/data/construction.ts) takes only
+/// tenantId + propertyId, matching getProjectById()'s shape in
+/// src/lib/data/projects.ts.
+///
+/// tenantId is not part of this model's originating field list (only
+/// propertyId was specified) but is added anyway: ARCHITECTURE.md's
+/// multi-tenancy mandate ("every table needs tenant_id") is a standing,
+/// project-wide rule, and every sibling tracking table already stores
+/// tenantId redundantly alongside a propertyId/userId FK for the same reason
+/// (PropertyOwnership, PaymentLedger) — defense-in-depth filtering/indexing
+/// and a real RLS boundary, not something left to be derived only through a
+/// join at query time. getPropertyMilestones() still does the requested
+/// "verify the property belongs to this tenant first" check against
+/// Property directly before ever querying this table.
+model ConstructionMilestone {
+  id             String          @id @default(uuid()) @db.Uuid
+  tenantId       String          @map("tenant_id") @db.Uuid
+  propertyId     String          @map("property_id") @db.Uuid
+  title          String
+  description    String?
+  status         MilestoneStatus @default(PENDING)
+  targetDate     DateTime        @map("target_date") @db.Date
+  completionDate DateTime?       @map("completion_date") @db.Date
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([propertyId])
+  @@map("construction_milestones")
+}
+
+/// Golden Visa application progress tracker backing the "Golden Visa" 5-step
+/// timeline screen (FRONTEND_SPEC.md: TimelineStep rows — numbered/checked
+/// circle + connector + title + date badge + optional description).
+///
+/// Unlike ConstructionMilestone above, this is per-user by design (each
+/// buyer's own visa application), matching PropertyOwnership/PaymentLedger's
+/// existing tenantId + userId pairing — getUserVisaSteps()
+/// (src/lib/data/visa.ts) filters strictly by both, the same reasoning as
+/// getUserLedger() in src/lib/data/ledgers.ts.
+///
+/// `@@unique([userId, stepOrder])` is not in this model's originating field
+/// list either, but mirrors PropertyOwnership's own `@@unique([userId,
+/// propertyId])` precedent: a 5-step timeline with two different rows
+/// claiming to be the same user's "step 3" is a data integrity bug this
+/// constraint prevents outright rather than leaving to application code.
+model VisaStep {
+  id          String          @id @default(uuid()) @db.Uuid
+  tenantId    String          @map("tenant_id") @db.Uuid
+  userId      String          @map("user_id")
+  stepOrder   Int             @map("step_order")
+  title       String
+  description String?
+  status      MilestoneStatus @default(PENDING)
+  completedAt DateTime?       @map("completed_at")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([userId, stepOrder])
+  @@index([tenantId])
+  @@index([userId])
+  @@map("visa_steps")
+}
+
+// ── Platform (ARCHITECTURE.md / CLAUDE.md mandated) ────────────
+
+/// BYOK credential storage — original raw-cryptographic shape matched
+/// ARCHITECTURE.md exactly; label/status/maskedKey added to realign with
+/// ApiKeyCard.tsx's actual prop requirements (see LOGS.md audit entry).
+/// Decryption happens server-side only; see ARCHITECTURE.md for the
+/// validation rules this table backs.
+///
+/// NOTE: there is no relation to User here to "keep" — there never was one.
+/// BYOK keys are tenant-level shared credentials (one organization's own AI
+/// provider account), not per-user, which is why this only ever related to
+/// Tenant. Preserved as-is rather than inventing a new per-user ownership
+/// field the request assumed already existed.
+model EncryptedApiKey {
+  id           String       @id @default(uuid()) @db.Uuid
+  tenantId     String       @map("tenant_id") @db.Uuid
+  provider     String
+  label        String
+  maskedKey    String       @map("masked_key")
+  status       ApiKeyStatus @default(ACTIVE)
+  encryptedKey String       @map("encrypted_key")
+  encryptionIv String       @map("encryption_iv")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  lastUsedAt   DateTime?    @map("last_used_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("encrypted_api_keys")
+}
+
+/// Self-observability log — shape matches CLAUDE.md exactly (tenant_id added
+/// per ARCHITECTURE.md's later, stricter multi-tenancy mandate, which
+/// explicitly lists ai_logs as requiring it).
+model AiLog {
+  id           String      @id @default(uuid()) @db.Uuid
+  tenantId     String      @map("tenant_id") @db.Uuid
+  agentAction  String      @map("agent_action")
+  status       AiLogStatus @default(RUNNING)
+  inputTokens  Int?        @map("input_tokens")
+  outputTokens Int?        @map("output_tokens")
+  cost         Decimal?    @db.Decimal(10, 4)
+  metadata     Json?
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("ai_logs")
+}
