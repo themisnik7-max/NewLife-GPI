@@ -730,4 +730,29 @@ Documents the real migration pipeline, not the literal `npx prisma migrate deplo
 
 ---
 
+## 2026-07-21 — Feature: Construction & Golden Visa Dashboard Pages
+
+- **Type:** Feature
+- **Summary:** Built the actual `/dashboard/construction` and `/dashboard/visa` pages on top of last entry's data layer — the two presentational components `FRONTEND_SPEC.md` calls for that are backed by real data (`ConstructionMilestones`, `VisaTimeline`), wired into new Server Component pages. Also made the first-ever commits for this project: everything from this session through last entry's data layer landed in one commit, and this entry's UI work in a second, clean commit — both file sets happened to split perfectly along "brand-new files only" lines, so no history had to be reconstructed by hand. All verified: `tsc --noEmit`, full suite (172/172, up from 162), and `next build` all pass clean; both new components report 100%/100%/100%/100% coverage.
+
+### Scope: only the pieces with real data behind them
+`FRONTEND_SPEC.md`'s Construction screen also calls for `UpdateCard` (photo/video updates) and `DocumentRow` (site documents); its GoldenVisa screen also calls for `DocumentChecklistRow`. None of these were built — there is no schema/table for documents or photo updates anywhere in this project, and inventing one now (plus the file storage a real version would need) is a substantially bigger undertaking than "wire the pages that already have a data layer." Building them today would have meant either hardcoded mock arrays (contradicting this session's own throughline of replacing mocks with real data) or a scope-creeping new feature nobody asked for.
+
+### `ConstructionMilestones` vs. `VisaTimeline` — two different visual shapes for two different data shapes
+`ConstructionMilestone` rows carry their own independent status each (no single "current milestone" concept), so `ConstructionMilestones` renders a plain list with a per-row status dot/badge, plus a genuinely computed overall-progress bar (`completedCount / total`, not a fabricated per-milestone `pct` — `FRONTEND_SPEC.md`'s mock shape (`{ label, pct, status }`) assumes a number this schema doesn't have). `VisaStep` rows are a true ordered sequence (`stepOrder`), so `VisaTimeline` reuses `RentalRoadmap`'s connector-stepper visual — numbered circles joined by a line — but reads each step's own status directly rather than deriving it from a single current-index comparison the way `RentalRoadmap` does, since `VisaStep`, unlike `RentalStage`, has no single "current stage" scalar to compare against.
+
+### A real locale bug caught by the test suite itself
+First test run failed on `getByText("Completed 5 Sep 2026")` — not a component bug. `Intl.DateTimeFormat("en-GB", { month: "short" })` renders September as **"Sept"** (4 letters); every other month in the calendar abbreviates to 3. Confirmed directly (`Intl.DateTimeFormat` output for all 12 months) before touching anything, rather than assumed. Fixed the test fixture, not the component — the component's formatting is correct and consistent with every other date display already in this codebase.
+
+### First commits for this project
+`git status` showed the entire session's backend work — going back to the original Clerk/Supabase/Prisma bridge — sitting uncommitted with `origin` already correctly pointed at this project's GitHub remote but nothing ever pushed. Split into two commits rather than one: everything through last entry's data layer (53 files, the schema/RLS/webhook/BYOK/ledger/data-layer work plus every page it wired) in the first commit, and this entry's 6 brand-new UI files (2 components, 2 pages, 2 tests) in a second. The split was possible with plain file-level `git add`, no hunk-splitting needed, because this entry touched only new files and never modified anything the first commit already covered.
+
+### Verification
+`npx tsc --noEmit` clean → `npm run test` 172/172 (20 files, up from 162/18 — one real failure found and fixed along the way, the `en-GB`/"Sept" issue above) → `npm run test:coverage`: `ConstructionMilestones.tsx`/`VisaTimeline.tsx` both 100%/100%/100%/100% (the project-wide 98.07% branch figure is unchanged pre-existing debt in files this entry never touched: `route.ts`, `ApiKeyCard.tsx`, `TopNav.tsx`, `projects.ts`, `propertyOwnership.ts`) → `npm run build` clean, `/dashboard/construction` and `/dashboard/visa` now real routes, both correctly `ƒ` dynamic.
+
+- **Files touched:** `src/components/ui/ConstructionMilestones.tsx` (created), `src/components/ui/VisaTimeline.tsx` (created), `src/app/dashboard/construction/page.tsx` (created), `src/app/dashboard/visa/page.tsx` (created), `src/__tests__/components/ConstructionMilestones.test.tsx` (created), `src/__tests__/components/VisaTimeline.test.tsx` (created), `LOGS.md`.
+- **Status:** Completed for what was in scope. Not attempted, flagged rather than silently skipped: `UpdateCard`/`DocumentRow`/`DocumentChecklistRow` and the documents/photo-updates feature they'd need behind them; actually pushing the two new commits to `origin` (committed locally only — pushing is a shared/visible action, left for explicit go-ahead); applying `0005_construction_and_visa.sql` to a real database, so both new pages currently show their empty state against any real Supabase project; and everything else already carried forward unchanged (organization multi-tenancy, admin navigation, dark mode, the Next 16/Vitest 4/Clerk 7 upgrade, the Clerk/Supabase dashboard clickthroughs).
+
+---
+
 <!-- Future entries go below this line, most recent last -->
