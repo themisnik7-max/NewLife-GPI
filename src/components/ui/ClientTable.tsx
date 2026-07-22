@@ -1,4 +1,4 @@
-"use client";
+import Link from "next/link";
 
 export type ClientStatus = "Active" | "Onboarding" | "Pending documents" | "Inactive";
 
@@ -66,10 +66,9 @@ const STATUS_TONE: Record<ClientStatus, string> = {
 
 export interface ClientTableProps {
   clients?: Client[];
-  onViewClient?: (clientId: string) => void;
 }
 
-export function ClientTable({ clients = MOCK_CLIENTS, onViewClient }: ClientTableProps) {
+export function ClientTable({ clients = MOCK_CLIENTS }: ClientTableProps) {
   return (
     <div className="overflow-x-auto rounded-lg border border-stone-200 bg-stone-0 shadow-sm">
       <table className="w-full min-w-[640px] text-left text-sm">
@@ -101,13 +100,12 @@ export function ClientTable({ clients = MOCK_CLIENTS, onViewClient }: ClientTabl
               </td>
               <td className="px-5 py-4 text-stone-500">{client.joinedDate}</td>
               <td className="px-5 py-4 text-right">
-                <button
-                  type="button"
-                  onClick={() => onViewClient?.(client.id)}
+                <Link
+                  href={`/dashboard/clients/${client.id}`}
                   className="rounded-md px-3 py-1.5 text-sm font-semibold text-aegean-600 transition-colors hover:bg-aegean-50"
                 >
                   View
-                </button>
+                </Link>
               </td>
             </tr>
           ))}

@@ -25,28 +25,14 @@ datasource db {
 }
 
 // ── Enums ────────────────────────────────────────────────────────
-
-enum Role {
-  ADMIN
-  TENANT
-  INVESTOR
-}
+//
+// Role, PaymentStatus, and ApiKeyStatus are deliberately NOT Prisma `enum`
+// blocks, unlike the ones below — see the comment on User.role for why.
 
 enum PropertyStatus {
   PLANNING
   UNDER_CONSTRUCTION
   COMPLETED
-}
-
-enum PaymentStatus {
-  PENDING
-  PAID
-  OVERDUE
-}
-
-enum ApiKeyStatus {
-  ACTIVE
-  REVOKED
 }
 
 /// 10-stage purchase-through-occupancy roadmap. NOTE: this is NOT the same
@@ -103,6 +89,7 @@ model Tenant {
   aiLogs                 AiLog[]
   constructionMilestones ConstructionMilestone[]
   visaSteps              VisaStep[]
+  notifications          Notification[]
 
   @@map("tenants")
 }
@@ -117,9 +104,32 @@ model User {
   id        String   @id @map("clerk_user_id")
   tenantId  String   @map("tenant_id") @db.Uuid
   email     String   @unique
-  role      Role     @default(TENANT)
+  /// String, not a Prisma `enum Role`, even though users.role is genuinely
+  /// constrained to ADMIN/TENANT/INVESTOR at the database level (see the
+  /// `check` constraint in supabase/migrations/0001_init.sql). Prisma 7's
+  /// "prisma-client" generator + @prisma/adapter-pg requires a REAL native
+  /// Postgres enum type to exist for any Prisma `enum` field — it casts
+  /// query parameters as `$1::"Role"` unconditionally. This project's
+  /// migrations deliberately use `text + check` everywhere instead (see
+  /// every migration file's own header comment on why), so that cast always
+  /// fails at runtime with `type "public.Role" does not exist` — confirmed
+  /// directly against the live database, not assumed; every unit test using
+  /// a mocked Prisma client stayed green throughout because the mismatch
+  /// only surfaces against a real Postgres connection. `Role` is now a
+  /// plain exported const (src/lib/auth/role.ts) instead, matching the
+  /// pattern RentalStage/PropertyStatus already use on the Supabase-path
+  /// side of this codebase for the same reason.
+  role      String   @default("TENANT")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Synced from the webhook payload's data.first_name/last_name — added to
+  /// back getTenantClients() (src/lib/data/clients.ts), which needs a real
+  /// display name for the admin client table. Nullable: Clerk allows a user
+  /// with no name set (email-only), and both were absent from this table
+  /// entirely until now, so there is no correct non-null value to backfill.
+  firstName String? @map("first_name")
+  lastName  String? @map("last_name")
 
   /// Timestamp of the Clerk webhook event that last wrote this row (from
   /// the event payload's own `data.updated_at`, not `updatedAt` above,
@@ -134,6 +144,7 @@ model User {
   propertyOwnerships PropertyOwnership[]
   paymentLedgers     PaymentLedger[]
   visaSteps          VisaStep[]
+  notifications      Notification[]
 
   @@index([tenantId])
   @@map("users")
@@ -193,17 +204,19 @@ model PropertyOwnership {
 }
 
 model PaymentLedger {
-  id            String        @id @default(uuid()) @db.Uuid
-  tenantId      String        @map("tenant_id") @db.Uuid
-  propertyId    String        @map("property_id") @db.Uuid
-  userId        String        @map("user_id")
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  propertyId    String   @map("property_id") @db.Uuid
+  userId        String   @map("user_id")
   amount        Float
-  dueDate       DateTime      @map("due_date") @db.Date
-  isDelayed     Boolean       @default(false) @map("is_delayed")
-  penaltyAmount Float         @default(0) @map("penalty_amount")
-  status        PaymentStatus @default(PENDING)
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
+  dueDate       DateTime @map("due_date") @db.Date
+  isDelayed     Boolean  @default(false) @map("is_delayed")
+  penaltyAmount Float    @default(0) @map("penalty_amount")
+  /// String, not a Prisma `enum PaymentStatus` — see the identical note on
+  /// User.role above; same root cause, same fix.
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   /// Cumulative amount paid toward this installment so far. Added because
   /// recordTenantPayment() (src/lib/data/ledgers.ts) needs to represent a
@@ -300,6 +313,30 @@ model VisaStep {
   @@map("visa_steps")
 }
 
+/// Backs the TopNav bell (src/components/ui/TopNav.tsx), which previously
+/// had no data behind it at all — a static button with no onClick. Kept
+/// deliberately minimal (message + read flag, no "type"/"link" taxonomy):
+/// nothing in this app yet has more than one kind of event worth notifying
+/// on, so a richer schema would be speculative. Per-user, not per-tenant
+/// broadcast: notifications are scoped to whichever single account a real
+/// event happened to (matching PaymentLedger/VisaStep's tenantId + userId
+/// pairing), not shared across everyone in a tenant.
+model Notification {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id")
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@map("notifications")
+}
+
 // ── Platform (ARCHITECTURE.md / CLAUDE.md mandated) ────────────
 
 /// BYOK credential storage — original raw-cryptographic shape matched
@@ -314,16 +351,18 @@ model VisaStep {
 /// Tenant. Preserved as-is rather than inventing a new per-user ownership
 /// field the request assumed already existed.
 model EncryptedApiKey {
-  id           String       @id @default(uuid()) @db.Uuid
-  tenantId     String       @map("tenant_id") @db.Uuid
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
   provider     String
   label        String
-  maskedKey    String       @map("masked_key")
-  status       ApiKeyStatus @default(ACTIVE)
-  encryptedKey String       @map("encrypted_key")
-  encryptionIv String       @map("encryption_iv")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  lastUsedAt   DateTime?    @map("last_used_at")
+  maskedKey    String    @map("masked_key")
+  /// String, not a Prisma `enum ApiKeyStatus` — see the identical note on
+  /// User.role above; same root cause, same fix.
+  status       String    @default("ACTIVE")
+  encryptedKey String    @map("encrypted_key")
+  encryptionIv String    @map("encryption_iv")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 

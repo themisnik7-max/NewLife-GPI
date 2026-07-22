@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { Webhook } from "svix";
 import type { UserWebhookEvent } from "@clerk/nextjs/webhooks";
 import { prisma } from "@/lib/prisma";
-import { Role } from "@/generated/prisma/client";
+import { Role } from "@/lib/auth/role";
 
 // Verification here is done manually with `svix` directly (rather than
 // `@clerk/nextjs`'s own `verifyWebhook()` convenience wrapper, which exists
@@ -109,7 +109,13 @@ export async function POST(req: Request) {
 
       await prisma.user.update({
         where: { id: clerkId },
-        data: { email: primaryEmail.email_address, role, lastSyncedAt: incomingEventTime },
+        data: {
+          email: primaryEmail.email_address,
+          role,
+          firstName: data.first_name,
+          lastName: data.last_name,
+          lastSyncedAt: incomingEventTime,
+        },
       });
     } else {
       // True 1:1 user-to-tenant provisioning: every genuinely new Clerk user
@@ -139,6 +145,8 @@ export async function POST(req: Request) {
             id: clerkId,
             email: primaryEmail.email_address,
             role,
+            firstName: data.first_name,
+            lastName: data.last_name,
             tenantId: newTenantId,
             lastSyncedAt: incomingEventTime,
           },

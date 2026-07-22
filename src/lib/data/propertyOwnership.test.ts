@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { getCurrentRentalStage, getOwnedProperty } from "@/lib/data/propertyOwnership";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { getClientPropertySnapshot, getCurrentRentalStage, getOwnedProperty } from "@/lib/data/propertyOwnership";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import { prisma } from "@/lib/prisma";
 
 vi.mock("server-only", () => ({}));
 
@@ -8,7 +9,20 @@ vi.mock("@/lib/supabaseClient", () => ({
   getSupabaseClient: vi.fn(),
 }));
 
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    propertyOwnership: {
+      findFirst: vi.fn(),
+    },
+  },
+}));
+
 const mockedGetSupabaseClient = vi.mocked(getSupabaseClient);
+const mockedFindFirst = vi.mocked(prisma.propertyOwnership.findFirst);
+
+beforeEach(() => {
+  mockedFindFirst.mockReset();
+});
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
@@ -239,5 +253,69 @@ describe("getCurrentRentalStage", () => {
     mockSupabaseQuery({ data: { rental_stage: "NOT_A_REAL_STAGE" }, error: null });
 
     await expect(getCurrentRentalStage("token", TENANT_A)).rejects.toThrow(/Unrecognized rental_stage/);
+  });
+});
+
+describe("getClientPropertySnapshot", () => {
+  const PROPERTY_ROW = {
+    id: "property-1",
+    tenantId: TENANT_A,
+    name: "Villa Elytra",
+    address: "Chania, Crete, Greece",
+    area: "Chania",
+    totalUnits: 8,
+    availableUnits: 2,
+    deliveryDate: new Date("2027-06-01"),
+    contractDate: new Date("2026-02-10"),
+    floor: 1,
+    sqm: 118,
+    energyClass: "A",
+    imageUrl: "https://placehold.co/800x450?text=Villa+Elytra",
+    status: "UNDER_CONSTRUCTION",
+    mapUrl: "https://www.google.com/maps/search/?api=1&query=Chania",
+    pptUrl: null,
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01"),
+  };
+
+  it("returns null property and null rentalStage when the user has no ownership row", async () => {
+    mockedFindFirst.mockResolvedValueOnce(null);
+
+    const result = await getClientPropertySnapshot(TENANT_A, "user_1");
+
+    expect(result).toEqual({ property: null, rentalStage: null });
+  });
+
+  it("queries scoped to both userId and tenantId, most recent ownership first", async () => {
+    mockedFindFirst.mockResolvedValueOnce(null);
+
+    await getClientPropertySnapshot(TENANT_A, "user_1");
+
+    expect(mockedFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: "user_1", tenantId: TENANT_A },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+  });
+
+  it("maps the joined property through the real Prisma-shaped mapper and passes rentalStage straight through", async () => {
+    mockedFindFirst.mockResolvedValueOnce({
+      id: "ownership-1",
+      tenantId: TENANT_A,
+      userId: "user_1",
+      propertyId: "property-1",
+      rentalStage: "VENDORS_ENGAGED",
+      createdAt: new Date("2026-01-01"),
+      updatedAt: new Date("2026-01-01"),
+      property: PROPERTY_ROW,
+    } as never);
+
+    const result = await getClientPropertySnapshot(TENANT_A, "user_1");
+
+    expect(result.rentalStage).toBe("VENDORS_ENGAGED");
+    expect(result.property).toEqual(
+      expect.objectContaining({ id: "property-1", name: "Villa Elytra", address: "Chania, Crete, Greece" }),
+    );
   });
 });

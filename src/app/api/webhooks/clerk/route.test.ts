@@ -29,14 +29,6 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-// Mocked rather than left to resolve the real generated client: this test
-// must never connect to a live database, and the generated client's output
-// path is code this suite has no reason to exercise just to reach a plain
-// string-enum constant.
-vi.mock("@/generated/prisma/client", () => ({
-  Role: { ADMIN: "ADMIN", TENANT: "TENANT", INVESTOR: "INVESTOR" },
-}));
-
 import { POST } from "@/app/api/webhooks/clerk/route";
 import { prisma } from "@/lib/prisma";
 
@@ -74,6 +66,8 @@ function buildUserEvent(overrides: {
   primaryEmailAddressId?: string | null;
   publicMetadata?: Record<string, unknown>;
   updatedAt?: number;
+  firstName?: string | null;
+  lastName?: string | null;
 }) {
   const emailId = overrides.emailId ?? "email_1";
   return {
@@ -85,6 +79,8 @@ function buildUserEvent(overrides: {
       primary_email_address_id: overrides.primaryEmailAddressId === undefined ? emailId : overrides.primaryEmailAddressId,
       public_metadata: overrides.publicMetadata ?? {},
       updated_at: overrides.updatedAt ?? BASE_TIME,
+      first_name: overrides.firstName === undefined ? null : overrides.firstName,
+      last_name: overrides.lastName === undefined ? null : overrides.lastName,
     },
   };
 }
@@ -208,11 +204,26 @@ describe("POST /api/webhooks/clerk", () => {
           id: "user_new",
           email: "new@example.com",
           role: "TENANT",
+          firstName: null,
+          lastName: null,
           tenantId: FIXED_TENANT_UUID,
           lastSyncedAt: new Date(BASE_TIME),
         },
       });
       expect(mockedUpdate).not.toHaveBeenCalled();
+    });
+
+    it("captures firstName/lastName from the webhook payload on creation", async () => {
+      mockedFindUnique.mockResolvedValueOnce(null);
+      verifyMock.mockReturnValueOnce(
+        buildUserEvent({ id: "user_named", firstName: "Maria", lastName: "Papadopoulos" }),
+      );
+
+      await POST(buildRequest({}));
+
+      expect(txUserCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ firstName: "Maria", lastName: "Papadopoulos" }) }),
+      );
     });
 
     it("falls back to the first email address when primary_email_address_id matches nothing", async () => {
@@ -254,9 +265,28 @@ describe("POST /api/webhooks/clerk", () => {
       expect(response.status).toBe(200);
       expect(mockedUpdate).toHaveBeenCalledWith({
         where: { id: "user_existing" },
-        data: { email: "updated@example.com", role: "TENANT", lastSyncedAt: new Date(BASE_TIME) },
+        data: {
+          email: "updated@example.com",
+          role: "TENANT",
+          firstName: null,
+          lastName: null,
+          lastSyncedAt: new Date(BASE_TIME),
+        },
       });
       expect(mockedTransaction).not.toHaveBeenCalled();
+    });
+
+    it("captures firstName/lastName from the webhook payload on update", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS) } as never);
+      verifyMock.mockReturnValueOnce(
+        buildUserEvent({ type: "user.updated", id: "user_existing", firstName: "Dimitris", lastName: "Anagnostou" }),
+      );
+
+      await POST(buildRequest({}));
+
+      expect(mockedUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ firstName: "Dimitris", lastName: "Anagnostou" }) }),
+      );
     });
 
     it("processes the update when lastSyncedAt was never recorded (pre-migration row)", async () => {

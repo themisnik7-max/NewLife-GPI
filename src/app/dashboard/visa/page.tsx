@@ -1,32 +1,31 @@
-import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { VisaTimeline } from "@/components/ui/VisaTimeline";
-import { getCurrentTenantId } from "@/lib/auth/currentTenant";
+import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserVisaSteps } from "@/lib/data/visa";
-
-const CURRENT_USER = {
-  initials: "MP",
-  name: "Maria Papadopoulos",
-  property: "Villa Elytra",
-};
+import { getUserNotifications } from "@/lib/data/notifications";
+import { markNotificationReadAction } from "@/app/actions/notifications";
 
 export default async function VisaPage() {
-  const { userId } = await auth();
-  const tenantId = await getCurrentTenantId();
+  const currentUser = await getCurrentUser();
   // getUserVisaSteps() is the Prisma path — no token needed, just tenantId +
   // userId, the same shape as dashboard/payments's getUserLedger() call.
-  const visaSteps = tenantId && userId ? await getUserVisaSteps(tenantId, userId) : [];
+  const [visaSteps, notifications] = await Promise.all([
+    currentUser ? getUserVisaSteps(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+    currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+  ]);
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="visa" client={{ property: CURRENT_USER.property }} />
+      <Sidebar activeKey="visa" client={{ property: currentUser?.email ?? "" }} />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Golden Visa"
           subtitle="Your residency application progress."
-          userName={CURRENT_USER.name}
-          userInitials={CURRENT_USER.initials}
+          userName={currentUser?.name ?? ""}
+          userInitials={currentUser?.initials ?? ""}
+          notifications={notifications}
+          onMarkNotificationRead={markNotificationReadAction}
         />
         <main className="flex-1 bg-stone-50 p-8">
           {visaSteps.length === 0 ? (

@@ -1,8 +1,22 @@
 import "server-only";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { ApiKeyStatus as PrismaApiKeyStatus } from "@/generated/prisma/client";
 import type { ApiKeyCardData, ApiKeyProvider, ApiKeyStatus } from "@/components/ui/ApiKeyCard";
+
+/**
+ * Plain const, not a Prisma-generated enum — EncryptedApiKey.status is a
+ * Prisma `String` column (see the note on User.role in prisma/schema.prisma
+ * for the full reason: Prisma 7's "prisma-client" generator requires a real
+ * native Postgres enum type for any Prisma `enum` field, which this
+ * project's `text + check` migrations never created). Kept under the same
+ * `PrismaApiKeyStatus` name every call site below already uses, so only
+ * this definition needed to change.
+ */
+const PrismaApiKeyStatus = {
+  ACTIVE: "ACTIVE",
+  REVOKED: "REVOKED",
+} as const;
+type PrismaApiKeyStatus = (typeof PrismaApiKeyStatus)[keyof typeof PrismaApiKeyStatus];
 
 const ENCRYPTION_ALGORITHM = "aes-256-gcm";
 const IV_LENGTH_BYTES = 12; // 96-bit IV — the size AES-GCM is designed for.
@@ -84,12 +98,18 @@ function buildMaskedKey(rawKeyMaterial: string): string {
   return `${prefix}${bullets}${suffix}`;
 }
 
-function toFrontendStatus(status: PrismaApiKeyStatus): ApiKeyStatus {
+// Takes the raw `string` Prisma now returns for this column (see the
+// PrismaApiKeyStatus comment above) rather than a narrowed enum type, so an
+// unrecognized value throws here explicitly instead of being a compile-time
+// impossibility the type system no longer actually guarantees.
+function toFrontendStatus(status: string): ApiKeyStatus {
   switch (status) {
     case "ACTIVE":
       return "active";
     case "REVOKED":
       return "revoked";
+    default:
+      throw new Error(`Unrecognized API key status from database: ${status}`);
   }
 }
 
@@ -114,7 +134,7 @@ interface ApiKeyRow {
   provider: string;
   label: string;
   maskedKey: string;
-  status: PrismaApiKeyStatus;
+  status: string;
   createdAt: Date;
   lastUsedAt: Date | null;
 }

@@ -1,36 +1,35 @@
-import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { DelayPenalty } from "@/components/ui/DelayPenalty";
-import { getCurrentTenantId } from "@/lib/auth/currentTenant";
+import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserLedger } from "@/lib/data/ledgers";
-
-const CURRENT_USER = {
-  initials: "MP",
-  name: "Maria Papadopoulos",
-  property: "Villa Elytra",
-};
+import { getUserNotifications } from "@/lib/data/notifications";
+import { markNotificationReadAction } from "@/app/actions/notifications";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" });
 const dateFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 export default async function PaymentsPage() {
-  const { userId } = await auth();
-  const tenantId = await getCurrentTenantId();
+  const currentUser = await getCurrentUser();
   // getUserLedger(), not getTenantLedger(): this page shows one client's own
   // installments, not every tenant member's — see ledgers.ts's own comment
   // on why those two functions exist separately.
-  const ledgerEntries = tenantId && userId ? await getUserLedger(tenantId, userId) : [];
+  const [ledgerEntries, notifications] = await Promise.all([
+    currentUser ? getUserLedger(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+    currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+  ]);
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="payments" client={{ property: CURRENT_USER.property }} />
+      <Sidebar activeKey="payments" client={{ property: currentUser?.email ?? "" }} />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Payments & Expenses"
           subtitle="Delivery schedule and penalty status."
-          userName={CURRENT_USER.name}
-          userInitials={CURRENT_USER.initials}
+          userName={currentUser?.name ?? ""}
+          userInitials={currentUser?.initials ?? ""}
+          notifications={notifications}
+          onMarkNotificationRead={markNotificationReadAction}
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           {ledgerEntries.length === 0 ? (

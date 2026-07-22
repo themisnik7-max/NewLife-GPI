@@ -21,7 +21,7 @@ function toFrontendStatus(status: Property["status"]): PropertyStatus {
   }
 }
 
-function toProject(property: Property): Project {
+export function toProject(property: Property): Project {
   return {
     id: property.id,
     name: property.name,

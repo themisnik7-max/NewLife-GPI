@@ -31,11 +31,6 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-vi.mock("@/generated/prisma/client", () => ({
-  ApiKeyStatus: { ACTIVE: "ACTIVE", REVOKED: "REVOKED" },
-  PaymentStatus: { PENDING: "PENDING", PAID: "PAID", OVERDUE: "OVERDUE" },
-}));
-
 import {
   createTenantApiKey,
   getDecryptedApiKey,
@@ -156,6 +151,12 @@ describe("apiKeys.ts", () => {
 
       expect(result[0].status).toBe("active");
       expect(result[1].status).toBe("revoked");
+    });
+
+    it("throws on an unrecognized status value from the database, rather than mistyping the row", async () => {
+      mockedFindManyKeys.mockResolvedValueOnce([buildApiKeyRow({ status: "EXPIRED" })] as never);
+
+      await expect(getTenantApiKeys(TENANT_A, USER_1)).rejects.toThrow(/Unrecognized API key status/);
     });
 
     it("maps a null lastUsedAt through as null, not a formatted date", async () => {
@@ -459,6 +460,12 @@ describe("ledgers.ts", () => {
       expect(result).toEqual([]);
     });
 
+    it("throws on an unrecognized status value from the database, rather than mistyping the row", async () => {
+      mockedFindManyLedger.mockResolvedValueOnce([buildLedgerRow({ status: "CANCELLED" })] as never);
+
+      await expect(getTenantLedger(TENANT_A)).rejects.toThrow(/Unrecognized payment ledger status/);
+    });
+
     it("computes isDelayed true for a non-PAID row whose due date has passed", async () => {
       mockedFindManyLedger.mockResolvedValueOnce([
         buildLedgerRow({ status: "PENDING", dueDate: FAR_PAST, isDelayed: false }),
@@ -552,11 +559,13 @@ describe("ledgers.ts", () => {
         ...(ledgerRow as Record<string, unknown>),
         ...args.data,
       }));
+      const txNotificationCreate = vi.fn().mockResolvedValue({});
       mockedTransaction.mockImplementation(((callback: (tx: unknown) => Promise<unknown>) =>
         callback({
           paymentLedger: { findFirst: txFindFirst, update: txUpdate },
+          notification: { create: txNotificationCreate },
         })) as never);
-      return { txFindFirst, txUpdate };
+      return { txFindFirst, txUpdate, txNotificationCreate };
     }
 
     it("looks up the ledger row scoped to both id and tenantId together", async () => {
@@ -586,6 +595,30 @@ describe("ledgers.ts", () => {
 
       expect(result.status).toBe("PAID");
       expect(result.amountPaid).toBe(1000);
+    });
+
+    it("creates a notification for the ledger's own user, inside the same transaction as the payment write", async () => {
+      const { txNotificationCreate } = mockTransactionAgainst(
+        buildLedgerRow({ amount: 1000, amountPaid: 0, status: "PENDING" }),
+      );
+
+      await recordTenantPayment(TENANT_A, "ledger-1", 400);
+
+      expect(txNotificationCreate).toHaveBeenCalledWith({
+        data: { tenantId: TENANT_A, userId: USER_1, message: expect.stringContaining("€400.00") },
+      });
+    });
+
+    it("uses the fully-paid notification wording only when the payment actually settles the installment", async () => {
+      const { txNotificationCreate } = mockTransactionAgainst(
+        buildLedgerRow({ amount: 1000, amountPaid: 0, status: "PENDING" }),
+      );
+
+      await recordTenantPayment(TENANT_A, "ledger-1", 1000);
+
+      expect(txNotificationCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({ message: expect.stringContaining("fully paid") }),
+      });
     });
 
     it("marks the installment PAID when a partial payment completes an already-partially-paid balance", async () => {

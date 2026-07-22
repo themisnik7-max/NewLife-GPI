@@ -1,7 +1,19 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { PaymentStatus } from "@/generated/prisma/client";
 import type { PaymentLedger } from "@/generated/prisma/client";
+
+/**
+ * Plain const, not a Prisma-generated enum — PaymentLedger.status is a
+ * Prisma `String` column (see the note on User.role in prisma/schema.prisma
+ * for the full reason: Prisma 7's "prisma-client" generator requires a real
+ * native Postgres enum type for any Prisma `enum` field, which this
+ * project's `text + check` migrations never created).
+ */
+const PaymentStatus = {
+  PENDING: "PENDING",
+  PAID: "PAID",
+  OVERDUE: "OVERDUE",
+} as const;
 
 export interface LedgerEntry {
   id: string;
@@ -18,6 +30,19 @@ export interface LedgerEntry {
 function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
+
+// Prisma now returns a raw `string` for this column (see the PaymentStatus
+// comment above) rather than a narrowed enum type, so an unrecognized value
+// throws here explicitly instead of being a compile-time impossibility the
+// type system no longer actually guarantees.
+function toLedgerStatus(status: string): LedgerEntry["status"] {
+  if (status !== "PENDING" && status !== "PAID" && status !== "OVERDUE") {
+    throw new Error(`Unrecognized payment ledger status from database: ${status}`);
+  }
+  return status;
+}
+
+const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" });
 
 /**
  * `isDelayed` is always computed here from the current clock, never
@@ -36,7 +61,7 @@ function toLedgerEntry(row: PaymentLedger, now: Date): LedgerEntry {
     amount: row.amount,
     amountPaid: row.amountPaid,
     dueDate: toIsoDate(row.dueDate),
-    status: row.status,
+    status: toLedgerStatus(row.status),
     isDelayed: row.status !== PaymentStatus.PAID && row.dueDate < now,
     penaltyAmount: row.penaltyAmount,
   };
@@ -105,6 +130,16 @@ export async function getUserLedger(tenantId: string, userId: string): Promise<L
  * overpayment credit — this schema has no refund/credit mechanism to apply
  * the excess to, so accepting it would just create an inconsistent,
  * unexplained balance.
+ *
+ * Also creates a Notification for the ledger's own user, in the same
+ * transaction as the payment write (via `tx`, not the standalone
+ * createNotification() helper in ./notifications.ts, which uses the
+ * top-level client — using `tx` here is what makes the notification and the
+ * payment update atomic: either both commit or neither does). This is
+ * deliberately the only place in the app that generates a notification
+ * automatically today; no other mutation exists yet (construction
+ * milestones/visa steps have no write path at all) to hook a second one
+ * into without inventing an event nothing else asked for.
  */
 export async function recordTenantPayment(
   tenantId: string,
@@ -141,6 +176,16 @@ export async function recordTenantPayment(
       data: {
         amountPaid: newAmountPaid,
         status: isFullySettled ? PaymentStatus.PAID : ledger.status,
+      },
+    });
+
+    await tx.notification.create({
+      data: {
+        tenantId,
+        userId: ledger.userId,
+        message: isFullySettled
+          ? `Payment of ${currencyFormatter.format(amountPaid)} recorded — installment fully paid.`
+          : `Payment of ${currencyFormatter.format(amountPaid)} recorded.`,
       },
     });
 

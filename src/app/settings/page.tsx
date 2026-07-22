@@ -1,16 +1,11 @@
-import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { ApiKeyCard } from "@/components/ui/ApiKeyCard";
-import { getCurrentTenantId } from "@/lib/auth/currentTenant";
+import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getTenantApiKeys } from "@/lib/data/apiKeys";
+import { getUserNotifications } from "@/lib/data/notifications";
 import { revokeApiKeyAction } from "./actions";
-
-const CURRENT_USER = {
-  initials: "MP",
-  name: "Maria Papadopoulos",
-  property: "Villa Elytra",
-};
+import { markNotificationReadAction } from "@/app/actions/notifications";
 
 const displayDateFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
@@ -23,19 +18,23 @@ function formatDisplayDate(isoDate: string): string {
 }
 
 export default async function SettingsPage() {
-  const { userId } = await auth();
-  const tenantId = await getCurrentTenantId();
-  const apiKeys = tenantId && userId ? await getTenantApiKeys(tenantId, userId) : [];
+  const currentUser = await getCurrentUser();
+  const [apiKeys, notifications] = await Promise.all([
+    currentUser ? getTenantApiKeys(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+    currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
+  ]);
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="profile" client={CURRENT_USER} />
+      <Sidebar activeKey="profile" client={{ property: currentUser?.email ?? "" }} />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Settings"
           subtitle="Manage your connected API keys."
-          userName={CURRENT_USER.name}
-          userInitials={CURRENT_USER.initials}
+          userName={currentUser?.name ?? ""}
+          userInitials={currentUser?.initials ?? ""}
+          notifications={notifications}
+          onMarkNotificationRead={markNotificationReadAction}
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           {apiKeys.length === 0 ? (

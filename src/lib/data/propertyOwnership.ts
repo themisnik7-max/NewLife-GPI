@@ -1,5 +1,7 @@
 import "server-only";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import { prisma } from "@/lib/prisma";
+import { toProject as toProjectFromPrismaRow } from "@/lib/data/projects";
 import type { Project, PropertyStatus } from "@/lib/projects";
 import type { RentalStage } from "@/components/ui/RentalRoadmap";
 
@@ -199,4 +201,42 @@ export async function getCurrentRentalStage(token: string | null, tenantId: stri
   }
 
   return toRentalStage(data.rental_stage);
+}
+
+export interface ClientPropertySnapshot {
+  property: Project | null;
+  rentalStage: RentalStage | null;
+}
+
+/**
+ * Prisma-path counterpart to getOwnedProperty()/getCurrentRentalStage()
+ * above, added for the admin client-detail page
+ * (src/app/dashboard/clients/[userId]/page.tsx). Those two functions are
+ * Supabase/RLS-backed and require a `token` representing the CALLING user's
+ * own Clerk session — which only works for viewing your own data. An admin
+ * viewing a *different* client's overview has no token for that other
+ * user, and RLS would deny the request even if one were fabricated. This
+ * bypasses RLS entirely (like every other Prisma-path function here) and
+ * relies on the caller having already verified admin/tenant authorization —
+ * see getClientOverviewData-style callers, which check role before this is
+ * ever invoked. Combines property + rentalStage in one query since both
+ * live on the same PropertyOwnership row; the Supabase path fetches them
+ * separately only because that reads more naturally through PostgREST's
+ * embedded-resource syntax.
+ */
+export async function getClientPropertySnapshot(tenantId: string, userId: string): Promise<ClientPropertySnapshot> {
+  const ownership = await prisma.propertyOwnership.findFirst({
+    where: { userId, tenantId },
+    orderBy: { createdAt: "desc" },
+    include: { property: true },
+  });
+
+  if (!ownership) {
+    return { property: null, rentalStage: null };
+  }
+
+  return {
+    property: toProjectFromPrismaRow(ownership.property),
+    rentalStage: ownership.rentalStage,
+  };
 }

@@ -1,6 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { ClientTable, MOCK_CLIENTS } from "@/components/ui/ClientTable";
 
 describe("ClientTable", () => {
@@ -22,24 +21,14 @@ describe("ClientTable", () => {
     }
   });
 
-  it("renders a visible View button per client row", () => {
+  it("links each client's View action to their admin detail page", () => {
     render(<ClientTable />);
 
-    const viewButtons = screen.getAllByRole("button", { name: "View" });
-    expect(viewButtons).toHaveLength(MOCK_CLIENTS.length);
-    viewButtons.forEach((button) => expect(button).toBeVisible());
-  });
-
-  it("calls onViewClient with the correct client id when its View button is clicked", async () => {
-    const user = userEvent.setup();
-    const onViewClient = vi.fn();
-    render(<ClientTable onViewClient={onViewClient} />);
-
-    const secondClient = MOCK_CLIENTS[1];
-    const viewButtons = screen.getAllByRole("button", { name: "View" });
-    await user.click(viewButtons[1]);
-
-    expect(onViewClient).toHaveBeenCalledWith(secondClient.id);
+    for (const client of MOCK_CLIENTS) {
+      const row = screen.getByText(client.name).closest("tr");
+      const viewLink = within(row as HTMLElement).getByRole("link", { name: "View" });
+      expect(viewLink).toHaveAttribute("href", `/dashboard/clients/${client.id}`);
+    }
   });
 
   it("renders a custom client list instead of the mock data when provided", () => {
