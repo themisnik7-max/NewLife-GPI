@@ -30,3 +30,6 @@ Thumbs.db
 
 # Supabase CLI local cache (project link metadata, version info — machine-local, not app config)
 supabase/.temp/
+
+.vercel
+.env*
