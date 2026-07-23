@@ -39,7 +39,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="overview" client={{ property: currentUser.email }} />
+      <Sidebar activeKey="overview" client={{ property: currentUser.email }} isAdmin={isAdmin} />
       <div className="flex flex-1 flex-col">
         <TopNav
           title={isAdmin ? "Clients" : "Overview"}

@@ -6,6 +6,7 @@ import { getTenantApiKeys } from "@/lib/data/apiKeys";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { revokeApiKeyAction } from "./actions";
 import { markNotificationReadAction } from "@/app/actions/notifications";
+import { Role } from "@/lib/auth/role";
 
 const displayDateFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
@@ -26,7 +27,11 @@ export default async function SettingsPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="profile" client={{ property: currentUser?.email ?? "" }} />
+      <Sidebar
+        activeKey="profile"
+        client={{ property: currentUser?.email ?? "" }}
+        isAdmin={currentUser?.role === Role.ADMIN}
+      />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Settings"

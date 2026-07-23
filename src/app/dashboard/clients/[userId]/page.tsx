@@ -52,7 +52,7 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="overview" client={{ property: currentUser.email }} />
+      <Sidebar activeKey="overview" client={{ property: currentUser.email }} isAdmin />
       <div className="flex flex-1 flex-col">
         <TopNav
           title={displayName}

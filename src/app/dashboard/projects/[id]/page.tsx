@@ -6,6 +6,7 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getProjectById } from "@/lib/data/projects";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
+import { Role } from "@/lib/auth/role";
 
 // No generateStaticParams here anymore: the previous mock-data version could
 // statically pre-render every id because the same 5 projects were shown to
@@ -27,7 +28,11 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="projects" client={{ property: currentUser?.email ?? "" }} />
+      <Sidebar
+        activeKey="projects"
+        client={{ property: currentUser?.email ?? "" }}
+        isAdmin={currentUser?.role === Role.ADMIN}
+      />
       <div className="flex flex-1 flex-col">
         <TopNav
           title={project.name}

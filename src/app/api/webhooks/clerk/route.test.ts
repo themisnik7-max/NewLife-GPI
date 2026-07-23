@@ -25,6 +25,9 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    tenant: {
+      upsert: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -34,6 +37,7 @@ import { prisma } from "@/lib/prisma";
 
 const mockedFindUnique = vi.mocked(prisma.user.findUnique);
 const mockedUpdate = vi.mocked(prisma.user.update);
+const mockedTenantUpsert = vi.mocked(prisma.tenant.upsert);
 const mockedTransaction = vi.mocked(prisma.$transaction);
 
 const FIXED_TENANT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -85,25 +89,58 @@ function buildUserEvent(overrides: {
   };
 }
 
+function buildOrganizationCreatedEvent(overrides: { id?: string; name?: string; updatedAt?: number } = {}) {
+  return {
+    type: "organization.created",
+    data: {
+      id: overrides.id ?? "org_abc123",
+      name: overrides.name ?? "Acme Org",
+      updated_at: overrides.updatedAt ?? BASE_TIME,
+    },
+  };
+}
+
+function buildMembershipEvent(overrides: {
+  type?: "organizationMembership.created" | "organizationMembership.updated" | "organizationMembership.deleted";
+  orgId?: string;
+  orgName?: string;
+  userId?: string;
+  role?: string;
+  updatedAt?: number;
+} = {}) {
+  return {
+    type: overrides.type ?? "organizationMembership.created",
+    data: {
+      organization: { id: overrides.orgId ?? "org_abc123", name: overrides.orgName ?? "Acme Org" },
+      public_user_data: { user_id: overrides.userId ?? "user_member" },
+      role: overrides.role ?? "org:member",
+      updated_at: overrides.updatedAt ?? BASE_TIME,
+    },
+  };
+}
+
 describe("POST /api/webhooks/clerk", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
   let randomUUIDSpy: ReturnType<typeof vi.spyOn>;
   let txTenantCreate: ReturnType<typeof vi.fn>;
   let txUserCreate: ReturnType<typeof vi.fn>;
+  let txUserUpdate: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.stubEnv("CLERK_WEBHOOK_SECRET", "whsec_test_secret");
     verifyMock.mockReset();
     mockedFindUnique.mockReset();
     mockedUpdate.mockReset().mockResolvedValue({} as never);
+    mockedTenantUpsert.mockReset().mockResolvedValue({ id: FIXED_TENANT_UUID } as never);
 
     txTenantCreate = vi.fn().mockResolvedValue({});
     txUserCreate = vi.fn().mockResolvedValue({});
+    txUserUpdate = vi.fn().mockResolvedValue({});
     mockedTransaction.mockReset().mockImplementation(((callback: (tx: unknown) => Promise<unknown>) =>
       callback({
         tenant: { create: txTenantCreate },
-        user: { create: txUserCreate },
+        user: { create: txUserCreate, update: txUserUpdate },
       })) as never);
 
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -239,6 +276,25 @@ describe("POST /api/webhooks/clerk", () => {
       );
     });
 
+    it("still succeeds when the payload has no updated_at at all", async () => {
+      mockedFindUnique.mockResolvedValueOnce(null);
+      verifyMock.mockReturnValueOnce({
+        type: "user.created",
+        data: {
+          id: "user_no_ts",
+          email_addresses: [{ id: "email_1", email_address: "no-ts@example.com" }],
+          primary_email_address_id: "email_1",
+          public_metadata: {},
+          first_name: null,
+          last_name: null,
+        },
+      });
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+    });
+
     it("rolls back cleanly (via the outer error boundary) if a concurrent delivery already created the user", async () => {
       mockedFindUnique.mockResolvedValueOnce(null);
       verifyMock.mockReturnValueOnce(buildUserEvent({ id: "user_race" }));
@@ -255,7 +311,10 @@ describe("POST /api/webhooks/clerk", () => {
 
   describe("existing user (recency-gated update)", () => {
     it("updates mutable fields when the incoming event is newer than the stored lastSyncedAt", async () => {
-      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS) } as never);
+      mockedFindUnique.mockResolvedValueOnce({
+        lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS),
+        tenant: { clerkOrgId: null },
+      } as never);
       verifyMock.mockReturnValueOnce(
         buildUserEvent({ type: "user.updated", id: "user_existing", email: "updated@example.com", updatedAt: BASE_TIME }),
       );
@@ -277,7 +336,10 @@ describe("POST /api/webhooks/clerk", () => {
     });
 
     it("captures firstName/lastName from the webhook payload on update", async () => {
-      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS) } as never);
+      mockedFindUnique.mockResolvedValueOnce({
+        lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS),
+        tenant: { clerkOrgId: null },
+      } as never);
       verifyMock.mockReturnValueOnce(
         buildUserEvent({ type: "user.updated", id: "user_existing", firstName: "Dimitris", lastName: "Anagnostou" }),
       );
@@ -290,7 +352,7 @@ describe("POST /api/webhooks/clerk", () => {
     });
 
     it("processes the update when lastSyncedAt was never recorded (pre-migration row)", async () => {
-      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: null } as never);
+      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: null, tenant: { clerkOrgId: null } } as never);
       verifyMock.mockReturnValueOnce(buildUserEvent({ type: "user.updated", id: "user_legacy" }));
 
       const response = await POST(buildRequest({}));
@@ -378,6 +440,219 @@ describe("POST /api/webhooks/clerk", () => {
     });
   });
 
+  describe("existing user whose tenant is org-backed", () => {
+    it("does not let a plain profile update overwrite an org-derived role", async () => {
+      // publicMetadata deliberately conflicts with the user's real,
+      // org-derived ADMIN role — proving the update genuinely ignores it
+      // rather than happening to agree with it by coincidence.
+      mockedFindUnique.mockResolvedValueOnce({
+        lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS),
+        tenant: { clerkOrgId: "org_abc123" },
+      } as never);
+      verifyMock.mockReturnValueOnce(
+        buildUserEvent({
+          type: "user.updated",
+          id: "user_orgadmin",
+          email: "admin@example.com",
+          publicMetadata: { role: "tenant" },
+        }),
+      );
+
+      await POST(buildRequest({}));
+
+      expect(mockedUpdate).toHaveBeenCalledWith({
+        where: { id: "user_orgadmin" },
+        data: {
+          email: "admin@example.com",
+          firstName: null,
+          lastName: null,
+          lastSyncedAt: new Date(BASE_TIME),
+        },
+      });
+    });
+  });
+
+  describe("organization.created", () => {
+    it("upserts a tenant keyed on the Clerk organization id, not a bare create", async () => {
+      verifyMock.mockReturnValueOnce(buildOrganizationCreatedEvent({ id: "org_new", name: "Papadopoulos Villas" }));
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+      expect(mockedTenantUpsert).toHaveBeenCalledWith({
+        where: { clerkOrgId: "org_new" },
+        create: { id: FIXED_TENANT_UUID, name: "Papadopoulos Villas", clerkOrgId: "org_new" },
+        update: {},
+      });
+    });
+
+    it("still succeeds when the payload has no updated_at at all", async () => {
+      verifyMock.mockReturnValueOnce({ type: "organization.created", data: { id: "org_no_ts", name: "No Timestamp Org" } });
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+    });
+  });
+
+  describe("organizationMembership.created / organizationMembership.updated", () => {
+    it.each(["organizationMembership.created", "organizationMembership.updated"] as const)(
+      "assigns the org's tenant and maps org:admin to Role.ADMIN for a %s event",
+      async (eventType) => {
+        mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: null } as never);
+        verifyMock.mockReturnValueOnce(
+          buildMembershipEvent({ type: eventType, userId: "user_admin", role: "org:admin" }),
+        );
+
+        const response = await POST(buildRequest({}));
+
+        expect(response.status).toBe(200);
+        expect(mockedTenantUpsert).toHaveBeenCalledWith({
+          where: { clerkOrgId: "org_abc123" },
+          create: { id: FIXED_TENANT_UUID, name: "Acme Org", clerkOrgId: "org_abc123" },
+          update: {},
+        });
+        expect(mockedUpdate).toHaveBeenCalledWith({
+          where: { id: "user_admin" },
+          data: {
+            tenantId: FIXED_TENANT_UUID,
+            role: "ADMIN",
+            orgMembershipSyncedAt: new Date(BASE_TIME),
+          },
+        });
+      },
+    );
+
+    it("maps org:member to Role.TENANT", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: null } as never);
+      verifyMock.mockReturnValueOnce(buildMembershipEvent({ userId: "user_client", role: "org:member" }));
+
+      await POST(buildRequest({}));
+
+      expect(mockedUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ role: "TENANT" }) }),
+      );
+    });
+
+    it("warns and defaults to TENANT for an unrecognized organization role", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: null } as never);
+      verifyMock.mockReturnValueOnce(buildMembershipEvent({ userId: "user_custom", role: "org:billing_manager" }));
+
+      await POST(buildRequest({}));
+
+      expect(mockedUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ role: "TENANT" }) }),
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("org:billing_manager"));
+    });
+
+    it("skips a stale event when orgMembershipSyncedAt is already newer than the incoming event", async () => {
+      mockedFindUnique.mockResolvedValueOnce({
+        orgMembershipSyncedAt: new Date(BASE_TIME + ONE_HOUR_MS),
+      } as never);
+      verifyMock.mockReturnValueOnce(buildMembershipEvent({ updatedAt: BASE_TIME }));
+
+      const response = await POST(buildRequest({}));
+
+      await expect(response.json()).resolves.toEqual({ received: true, skipped: "stale event" });
+      expect(mockedTenantUpsert).not.toHaveBeenCalled();
+      expect(mockedUpdate).not.toHaveBeenCalled();
+    });
+
+    it("returns 500 (so Clerk retries) when the target user hasn't synced via user.created yet", async () => {
+      mockedFindUnique.mockResolvedValueOnce(null);
+      verifyMock.mockReturnValueOnce(buildMembershipEvent({ userId: "user_not_synced_yet" }));
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(500);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+
+    it("still succeeds when the payload has no updated_at at all", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: null } as never);
+      verifyMock.mockReturnValueOnce({
+        type: "organizationMembership.created",
+        data: {
+          organization: { id: "org_abc123", name: "Acme Org" },
+          public_user_data: { user_id: "user_no_ts" },
+          role: "org:member",
+        },
+      });
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+    });
+  });
+
+  describe("organizationMembership.deleted", () => {
+    it("gives the removed member a fresh personal tenant and resets their role to TENANT", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS) } as never);
+      verifyMock.mockReturnValueOnce(
+        buildMembershipEvent({ type: "organizationMembership.deleted", userId: "user_removed" }),
+      );
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+      expect(txTenantCreate).toHaveBeenCalledWith({
+        data: { id: FIXED_TENANT_UUID, name: "User Tenant - user_removed" },
+      });
+      expect(txUserUpdate).toHaveBeenCalledWith({
+        where: { id: "user_removed" },
+        data: {
+          tenantId: FIXED_TENANT_UUID,
+          role: "TENANT",
+          orgMembershipSyncedAt: new Date(BASE_TIME),
+        },
+      });
+    });
+
+    it("skips a stale removal event when orgMembershipSyncedAt is already newer", async () => {
+      mockedFindUnique.mockResolvedValueOnce({
+        orgMembershipSyncedAt: new Date(BASE_TIME + ONE_HOUR_MS),
+      } as never);
+      verifyMock.mockReturnValueOnce(
+        buildMembershipEvent({ type: "organizationMembership.deleted", updatedAt: BASE_TIME }),
+      );
+
+      const response = await POST(buildRequest({}));
+
+      await expect(response.json()).resolves.toEqual({ received: true, skipped: "stale event" });
+      expect(mockedTransaction).not.toHaveBeenCalled();
+    });
+
+    it("still succeeds when the payload has no updated_at at all", async () => {
+      mockedFindUnique.mockResolvedValueOnce({ orgMembershipSyncedAt: null } as never);
+      verifyMock.mockReturnValueOnce({
+        type: "organizationMembership.deleted",
+        data: {
+          organization: { id: "org_abc123", name: "Acme Org" },
+          public_user_data: { user_id: "user_no_ts" },
+          role: "org:member",
+        },
+      });
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+    });
+
+    it("acknowledges without erroring when the removed user is unknown", async () => {
+      mockedFindUnique.mockResolvedValueOnce(null);
+      verifyMock.mockReturnValueOnce(
+        buildMembershipEvent({ type: "organizationMembership.deleted", userId: "user_unknown" }),
+      );
+
+      const response = await POST(buildRequest({}));
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ received: true, skipped: "unknown user" });
+      expect(mockedTransaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe("comprehensive error boundary", () => {
     it("returns 500 and logs when the database lookup itself throws", async () => {
       mockedFindUnique.mockRejectedValueOnce(new Error("connection terminated unexpectedly"));
@@ -392,7 +667,10 @@ describe("POST /api/webhooks/clerk", () => {
     });
 
     it("returns 500 when the update path throws", async () => {
-      mockedFindUnique.mockResolvedValueOnce({ lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS) } as never);
+      mockedFindUnique.mockResolvedValueOnce({
+        lastSyncedAt: new Date(BASE_TIME - ONE_HOUR_MS),
+        tenant: { clerkOrgId: null },
+      } as never);
       mockedUpdate.mockRejectedValueOnce(new Error("deadlock detected"));
       verifyMock.mockReturnValueOnce(buildUserEvent({ type: "user.updated" }));
 

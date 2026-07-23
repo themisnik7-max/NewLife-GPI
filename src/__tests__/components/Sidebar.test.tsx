@@ -16,14 +16,28 @@ describe("Sidebar", () => {
     expect(screen.getByText("Villa Elytra")).toBeInTheDocument();
   });
 
-  it("renders every nav item as a visible link pointing at its route", () => {
+  it("renders every non-admin-only nav item as a visible link pointing at its route", () => {
     render(<Sidebar activeKey="overview" client={client} />);
 
-    for (const item of SIDEBAR_NAV_ITEMS) {
+    for (const item of SIDEBAR_NAV_ITEMS.filter((navItem) => !navItem.adminOnly)) {
       const link = screen.getByRole("link", { name: item.label });
       expect(link).toBeVisible();
       expect(link).toHaveAttribute("href", item.href);
     }
+  });
+
+  it("hides admin-only nav items (Team) when isAdmin is not passed", () => {
+    render(<Sidebar activeKey="overview" client={client} />);
+
+    expect(screen.queryByRole("link", { name: "Team" })).not.toBeInTheDocument();
+  });
+
+  it("shows admin-only nav items (Team) when isAdmin is true", () => {
+    render(<Sidebar activeKey="overview" client={client} isAdmin />);
+
+    const link = screen.getByRole("link", { name: "Team" });
+    expect(link).toBeVisible();
+    expect(link).toHaveAttribute("href", "/dashboard/team");
   });
 
   it("marks only the active nav item with aria-current", () => {

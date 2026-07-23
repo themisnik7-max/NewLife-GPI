@@ -81,6 +81,14 @@ model Tenant {
   name      String
   createdAt DateTime @default(now()) @map("created_at")
 
+  /// Set only when this tenant is backed by a real Clerk Organization
+  /// (src/app/api/webhooks/clerk/route.ts's organization.created /
+  /// organizationMembership.* handling) rather than the default
+  /// one-tenant-per-signup path. Nullable: every pre-existing tenant,
+  /// including personal accounts going forward, has no organization behind
+  /// it and stays that way unless an admin actually creates one.
+  clerkOrgId String? @unique @map("clerk_org_id")
+
   users                  User[]
   properties             Property[]
   propertyOwnerships     PropertyOwnership[]
@@ -139,6 +147,16 @@ model User {
   /// existed before this column was added have no such record yet, which
   /// correctly means "always process the next update," not "always stale."
   lastSyncedAt DateTime? @map("last_synced_at")
+
+  /// Timestamp of the last organizationMembership.* webhook event that wrote
+  /// this row's tenantId/role — deliberately a SEPARATE column from
+  /// lastSyncedAt above, not a shared one. lastSyncedAt is driven by the
+  /// independent user.* event stream with its own cadence; comparing two
+  /// unrelated event streams against one shared timestamp would produce
+  /// false-stale/false-fresh results for whichever stream didn't write it
+  /// last. Nullable: a user who has never been part of a Clerk Organization
+  /// has no such event to record yet.
+  orgMembershipSyncedAt DateTime? @map("org_membership_synced_at")
 
   tenant             Tenant              @relation(fields: [tenantId], references: [id])
   propertyOwnerships PropertyOwnership[]

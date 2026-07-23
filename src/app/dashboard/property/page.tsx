@@ -6,6 +6,7 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getOwnedProperty } from "@/lib/data/propertyOwnership";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
+import { Role } from "@/lib/auth/role";
 
 export default async function PropertyPage() {
   const { getToken } = await auth();
@@ -19,7 +20,11 @@ export default async function PropertyPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="property" client={{ property: currentUser?.email ?? "" }} />
+      <Sidebar
+        activeKey="property"
+        client={{ property: currentUser?.email ?? "" }}
+        isAdmin={currentUser?.role === Role.ADMIN}
+      />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="My Property"

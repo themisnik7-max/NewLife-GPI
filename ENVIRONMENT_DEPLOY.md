@@ -62,14 +62,36 @@ These cannot be scripted — they require clicking through the Clerk and Supabas
   ```json
   { "publicMetadata": "{{user.public_metadata}}" }
   ```
-- [ ] **Clerk Dashboard** → Webhooks → Add Endpoint → point it at `https://<your-production-domain>/api/webhooks/clerk`, subscribe to `user.created` and `user.updated` → copy the **Signing Secret** into `CLERK_WEBHOOK_SECRET` (§1).
+- [ ] **Clerk Dashboard** → Webhooks → Add Endpoint → point it at `https://<your-production-domain>/api/webhooks/clerk`, subscribe to `user.created`, `user.updated`, `organization.created`, `organizationMembership.created`, `organizationMembership.updated`, and `organizationMembership.deleted` → copy the **Signing Secret** into `CLERK_WEBHOOK_SECRET` (§1). The four organization-related event types back real multi-client tenancy (see `src/app/api/webhooks/clerk/route.ts`) — omitting them here means an admin's `/dashboard/team` invites never actually attach the invited client to the right tenant in production.
 - [ ] Set every "Not set yet" row from §1 in both your local `.env`/`.env.local` **and** your host's production environment variables.
 
-If any of Steps 1–2 above are skipped, nothing errors loudly — `auth.jwt()` simply resolves to `NULL` inside Postgres, and every RLS policy that depends on it silently denies. See the verification checklist in §6 before trusting that this part is actually working.
+If any of Steps 1–2 above are skipped, nothing errors loudly — `auth.jwt()` simply resolves to `NULL` inside Postgres, and every RLS policy that depends on it silently denies. See the verification checklist in §7 before trusting that this part is actually working.
 
 ---
 
-## 3. Database migration pipeline
+## 3. Local development: webhook forwarding
+
+Clerk cannot reach `localhost` — so while developing locally, none of `user.created`/`user.updated`/`organization.created`/`organizationMembership.*` ever reach `src/app/api/webhooks/clerk/route.ts` on their own. Every account used for local testing before this section existed had to be provisioned by hand directly in Postgres (see `LOGS.md`'s 2026-07-23 entry).
+
+**Decision (2026-07-23): this project is deliberately not doing local tunnel forwarding.** Organizations is already enabled in the Clerk Dashboard (Membership optional), but rather than run a local ngrok tunnel, webhook/organization behavior will be exercised against the real deployed URL once this project is on Vercel (§6) — a real host is reachable by Clerk with no tunnel needed at all. The steps below are kept as optional reference for anyone who does want local delivery before deploying; this project is skipping straight to deploying instead.
+
+⚠️ **Until *some* webhook endpoint exists — local tunnel or the deployed production one — don't create or test a real Organization** (via `/dashboard/team` or the Backend API). Organizations being enabled with no endpoint registered anywhere means `organization.created`/`organizationMembership.created` have nowhere to be sent at all — not delivered-and-discarded, simply never sent — so a "test" organization created now would exist in Clerk with no matching `Tenant` row in Postgres, and its creator would be stuck without a tenant until an endpoint exists and either the org is recreated or the row is backfilled by hand.
+
+There is no first-party Clerk CLI tunnel — ngrok is Clerk's own documented approach for this (optional, not this project's chosen path — see above):
+
+1. **Install the ngrok agent** (not the older, now-deprecated `ngrok` npm package) — see [ngrok's own install docs](https://ngrok.com/download) for your OS. This is a one-time, machine-level install; it has no business in this repo's `package.json`, since it's a personal dev-machine tool, not application code.
+2. **Create a free ngrok account** and run `ngrok config add-authtoken <your-authtoken>` once (from the ngrok dashboard's setup page).
+3. **Start the tunnel**, pointed at this project's dev server port:
+   ```
+   ngrok http 3000
+   ```
+   Or, to get a stable URL that doesn't change every restart, reserve ngrok's free static domain and use `ngrok http --url=<your-static-domain> 3000` instead.
+4. **Clerk Dashboard** → Webhooks → Add Endpoint → `<ngrok-forwarding-url>/api/webhooks/clerk`, subscribing to the same six event types as §2's production endpoint: `user.created`, `user.updated`, `organization.created`, `organizationMembership.created`, `organizationMembership.updated`, `organizationMembership.deleted`.
+5. **Copy that endpoint's Signing Secret** into `.env.local` as `CLERK_WEBHOOK_SECRET` — this project deliberately verifies webhooks with the `svix` library directly against that exact env var name (see the comment at the top of `route.ts`), not `@clerk/nextjs`'s own default-named `CLERK_WEBHOOK_SIGNING_SECRET`, so no code change is needed here, just the value.
+
+---
+
+## 4. Database migration pipeline
 
 **This project does not use `npx prisma migrate deploy`.** `prisma.config.ts` declares `migrations.path: "prisma/migrations"`, but no such directory exists in this repo — there is no Prisma-generated migration history to deploy. Every schema change is instead handwritten, reviewed SQL under `supabase/migrations/`, applied directly to Postgres; `prisma/schema.prisma` is kept in sync by hand alongside it (see `supabase/migrations/0001_init.sql`'s own header comment). Attempting `prisma migrate deploy` against this repo as it stands today would find no local migration history and do nothing useful — don't rely on it.
 
@@ -82,6 +104,8 @@ The real pipeline:
    supabase/migrations/0003_add_webhook_metadata.sql
    supabase/migrations/0004_payment_ledger_partial_payments.sql
    supabase/migrations/0005_construction_and_visa.sql
+   supabase/migrations/0006_notifications_and_user_name.sql
+   supabase/migrations/0007_clerk_organizations.sql
    ```
    Either:
    - `supabase db push` (Supabase CLI, linked to your project via `supabase link`), or
@@ -104,7 +128,7 @@ The real pipeline:
 
 ---
 
-## 4. Build
+## 5. Build
 
 ```
 npm run test
@@ -117,15 +141,15 @@ All four must pass before deploying — this mirrors `CLAUDE.md`'s standing test
 
 ---
 
-## 5. Deploy (Vercel)
+## 6. Deploy (Vercel)
 
 - [ ] Confirm every variable from §1 is set in the target Vercel environment (Production, and separately Preview if you want webhooks/Supabase to work on preview deployments too — Clerk webhooks in particular need a publicly reachable URL, so `CLERK_WEBHOOK_SECRET`/the webhook endpoint won't work against `localhost`).
-- [ ] Push/merge to the branch Vercel deploys from. (No CI pipeline currently runs the §4 checks automatically on this repo — until one exists, running them locally before pushing is the only gate.)
-- [ ] Confirm the deployment's build logs show the four `/dashboard/*` dynamic routes (`rental`, `payments`, plus `construction`/`visa` once those pages exist — see the note in §7) rendering as `ƒ` (dynamic), not `○` (static) — a page that fetches real per-tenant data statically-rendering would mean it got baked at build time with no real user's data, which is wrong for every one of these routes.
+- [ ] Push/merge to the branch Vercel deploys from. (No CI pipeline currently runs the §5 checks automatically on this repo — until one exists, running them locally before pushing is the only gate.)
+- [ ] Confirm the deployment's build logs show the four `/dashboard/*` dynamic routes (`rental`, `payments`, plus `construction`/`visa` once those pages exist — see the note in §8) rendering as `ƒ` (dynamic), not `○` (static) — a page that fetches real per-tenant data statically-rendering would mean it got baked at build time with no real user's data, which is wrong for every one of these routes.
 
 ---
 
-## 6. Post-deploy verification checklist
+## 7. Post-deploy verification checklist
 
 Directly from `ARCHITECTURE.md`'s own verification checklist — repeated here so a deploy isn't considered done until these are actually checked against the live environment, not just configured:
 
@@ -140,10 +164,10 @@ Directly from `ARCHITECTURE.md`'s own verification checklist — repeated here s
 
 ---
 
-## 7. Known gaps not covered by this deploy
+## 8. Known gaps not covered by this deploy
 
 Carried over from the current backlog, not resolved by this pass — do not assume production-readiness beyond what's listed above:
 
 - `/dashboard/construction` and `/dashboard/visa` **pages** don't exist yet. This pass added the database models (`ConstructionMilestone`, `VisaStep`), RLS policies, and data-access functions (`getPropertyMilestones`, `getUserVisaSteps`) backing them, per `FRONTEND_SPEC.md` — but no route/component wires them up yet. Deploying today ships working backend plumbing for two pages that don't render anything yet.
-- No CI pipeline currently runs `npm run test` / `npm run build` automatically on push — §4's checks are manual today.
-- Organization-based multi-user tenants, admin-specific navigation, and dark mode remain open product decisions, unaffected by this deploy.
+- No CI pipeline currently runs `npm run test` / `npm run build` automatically on push — §5's checks are manual today.
+- Organization-based multi-user tenancy (§2, §3) now exists for `organization.created`/`organizationMembership.created`/`.updated`/`.deleted` — but `organization.updated` (name changes) and `organization.deleted` are deliberately not handled yet, and Clerk's own allowance for one user to belong to multiple organizations simultaneously isn't enforced (this schema's single `tenantId` scalar assumes one org per user). Admin-specific navigation beyond Overview/Team, and dark mode, remain open product decisions.

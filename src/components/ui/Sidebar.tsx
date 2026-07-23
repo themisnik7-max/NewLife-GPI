@@ -8,6 +8,7 @@ import {
   Wallet,
   KeyRound,
   User,
+  Users,
   Building2,
   LayoutGrid,
   type LucideIcon,
@@ -19,6 +20,8 @@ export interface SidebarNavItem {
   label: string;
   href: string;
   icon: LucideIcon;
+  /** Rendered only when Sidebar is given `isAdmin`. */
+  adminOnly?: boolean;
 }
 
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
@@ -29,6 +32,7 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { key: "payments", label: "Payments & expenses", href: "/dashboard/payments", icon: Wallet },
   { key: "rental", label: "Rental & taxes", href: "/dashboard/rental", icon: KeyRound },
   { key: "projects", label: "Available Projects", href: "/dashboard/projects", icon: LayoutGrid },
+  { key: "team", label: "Team", href: "/dashboard/team", icon: Users, adminOnly: true },
   { key: "profile", label: "Personal info", href: "/settings", icon: User },
 ];
 
@@ -39,9 +43,12 @@ export interface SidebarClient {
 export interface SidebarProps {
   activeKey: string;
   client: SidebarClient;
+  isAdmin?: boolean;
 }
 
-export function Sidebar({ activeKey, client }: SidebarProps) {
+export function Sidebar({ activeKey, client, isAdmin = false }: SidebarProps) {
+  const visibleNavItems = SIDEBAR_NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+
   return (
     <nav
       aria-label="Primary"
@@ -52,7 +59,7 @@ export function Sidebar({ activeKey, client }: SidebarProps) {
       </div>
 
       <ul className="flex flex-1 flex-col gap-1">
-        {SIDEBAR_NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const isActive = item.key === activeKey;
           const Icon = item.icon;
           return (

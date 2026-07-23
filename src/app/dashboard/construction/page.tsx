@@ -7,6 +7,7 @@ import { getOwnedProperty } from "@/lib/data/propertyOwnership";
 import { getPropertyMilestones } from "@/lib/data/construction";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
+import { Role } from "@/lib/auth/role";
 
 export default async function ConstructionPage() {
   const { getToken } = await auth();
@@ -24,7 +25,11 @@ export default async function ConstructionPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="construction" client={{ property: currentUser?.email ?? "" }} />
+      <Sidebar
+        activeKey="construction"
+        client={{ property: currentUser?.email ?? "" }}
+        isAdmin={currentUser?.role === Role.ADMIN}
+      />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Construction"

@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserLedger } from "@/lib/data/ledgers";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
+import { Role } from "@/lib/auth/role";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" });
 const dateFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -21,7 +22,11 @@ export default async function PaymentsPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="payments" client={{ property: currentUser?.email ?? "" }} />
+      <Sidebar
+        activeKey="payments"
+        client={{ property: currentUser?.email ?? "" }}
+        isAdmin={currentUser?.role === Role.ADMIN}
+      />
       <div className="flex flex-1 flex-col">
         <TopNav
           title="Payments & Expenses"
