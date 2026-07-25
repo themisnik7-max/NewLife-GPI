@@ -237,6 +237,83 @@ export async function getClientPropertySnapshot(tenantId: string, userId: string
 
   return {
     property: toProjectFromPrismaRow(ownership.property),
-    rentalStage: ownership.rentalStage,
+    // ownership.rentalStage is now a raw Prisma `string` (see
+    // PropertyOwnership.rentalStage's comment in prisma/schema.prisma),
+    // not a narrowed enum type — reusing toRentalStage() here, previously
+    // only applied on the Supabase-path getCurrentRentalStage() above,
+    // since this Prisma-path return was a silent, unvalidated pass-through.
+    rentalStage: toRentalStage(ownership.rentalStage),
   };
+}
+
+/**
+ * Assigns a property to a client, creating the PropertyOwnership row that
+ * every other per-client view reads from (property, rental stage, and the
+ * Overview summary all resolve through it).
+ *
+ * Both the property AND the user are verified to belong to `tenantId`
+ * first: this is a Prisma-path write, so RLS provides no protection at all
+ * (see ARCHITECTURE.md), and a client-supplied id could otherwise name a
+ * real row in a different tenant. Idempotent by design — PropertyOwnership
+ * has a `@@unique([userId, propertyId])` constraint, so re-assigning a
+ * property the client already owns returns the existing row rather than
+ * throwing a raw Prisma constraint error at the admin.
+ */
+export async function assignPropertyToClient(
+  tenantId: string,
+  userId: string,
+  propertyId: string,
+): Promise<void> {
+  const [property, user] = await Promise.all([
+    prisma.property.findFirst({ where: { id: propertyId, tenantId }, select: { id: true } }),
+    prisma.user.findFirst({ where: { id: userId, tenantId }, select: { id: true } }),
+  ]);
+
+  if (!property) {
+    throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
+  }
+  if (!user) {
+    throw new Error(`User ${userId} was not found for tenant ${tenantId}.`);
+  }
+
+  const existing = await prisma.propertyOwnership.findFirst({ where: { userId, propertyId } });
+  if (existing) {
+    return;
+  }
+
+  await prisma.propertyOwnership.create({ data: { tenantId, userId, propertyId } });
+}
+
+/**
+ * Advances (or corrects) a client's rental stage.
+ *
+ * Targets the client's most recently created ownership row, deliberately
+ * matching getClientPropertySnapshot()/getOwnedProperty()'s own
+ * `orderBy: { createdAt: "desc" }, take 1` convention — otherwise an admin
+ * could update a stage that no screen in the app actually displays.
+ */
+export async function updateRentalStage(
+  tenantId: string,
+  userId: string,
+  newStage: RentalStage,
+): Promise<void> {
+  // Validates against the same VALID_RENTAL_STAGES set the read path uses,
+  // so a bad value fails here rather than landing in the database and
+  // throwing on every subsequent read instead.
+  toRentalStage(newStage);
+
+  const ownership = await prisma.propertyOwnership.findFirst({
+    where: { userId, tenantId },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+
+  if (!ownership) {
+    throw new Error(`No property ownership was found for user ${userId} in tenant ${tenantId}.`);
+  }
+
+  await prisma.propertyOwnership.update({
+    where: { id: ownership.id },
+    data: { rentalStage: newStage },
+  });
 }

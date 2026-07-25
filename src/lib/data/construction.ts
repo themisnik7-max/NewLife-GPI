@@ -2,6 +2,22 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { ConstructionMilestone } from "@/generated/prisma/client";
 
+/**
+ * Plain const, not a Prisma-generated enum — ConstructionMilestone.status is
+ * a Prisma `String` column (see the note on it in prisma/schema.prisma:
+ * Prisma 7's "prisma-client" generator requires a real native Postgres enum
+ * type for any Prisma `enum` field, which this project's `text + check`
+ * migrations never created). Kept as its own local const rather than a
+ * shared import from visa.ts, even though both columns draw from the same
+ * status vocabulary — matching this project's established one-file-one-const
+ * convention (see Role/PaymentStatus/ApiKeyStatus).
+ */
+const MilestoneStatusValue = {
+  PENDING: "PENDING",
+  IN_PROGRESS: "IN_PROGRESS",
+  COMPLETED: "COMPLETED",
+} as const;
+
 export interface MilestoneEntry {
   id: string;
   propertyId: string;
@@ -16,13 +32,29 @@ function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+// Prisma now returns a raw `string` for this column (see the
+// MilestoneStatusValue comment above) rather than a narrowed enum type, so an
+// unrecognized value throws here explicitly instead of silently mistyping
+// the row — this used to be a bare `row.status` pass-through, safe only
+// because Prisma's enum type made it a compile-time impossibility.
+function toMilestoneStatus(status: string): MilestoneEntry["status"] {
+  if (
+    status !== MilestoneStatusValue.PENDING &&
+    status !== MilestoneStatusValue.IN_PROGRESS &&
+    status !== MilestoneStatusValue.COMPLETED
+  ) {
+    throw new Error(`Unrecognized construction milestone status from database: ${status}`);
+  }
+  return status;
+}
+
 function toMilestoneEntry(row: ConstructionMilestone): MilestoneEntry {
   return {
     id: row.id,
     propertyId: row.propertyId,
     title: row.title,
     description: row.description,
-    status: row.status,
+    status: toMilestoneStatus(row.status),
     targetDate: toIsoDate(row.targetDate),
     completionDate: row.completionDate ? toIsoDate(row.completionDate) : null,
   };
@@ -62,4 +94,82 @@ export async function getPropertyMilestones(tenantId: string, propertyId: string
   });
 
   return rows.map(toMilestoneEntry);
+}
+
+export interface MilestoneInput {
+  title: string;
+  description?: string | null;
+  targetDate: string;
+  status?: MilestoneEntry["status"];
+}
+
+/**
+ * Adds a construction milestone to a property.
+ *
+ * Verifies the property belongs to `tenantId` first, exactly as
+ * getPropertyMilestones() above does — but throws instead of returning
+ * empty: a read of someone else's property should look indistinguishable
+ * from "nothing there", while a *write* against one is a real error the
+ * caller needs to see.
+ */
+export async function createMilestone(
+  tenantId: string,
+  propertyId: string,
+  input: MilestoneInput,
+): Promise<MilestoneEntry> {
+  if (!input.title?.trim()) {
+    throw new Error("Milestone title must not be empty.");
+  }
+  if (Number.isNaN(Date.parse(input.targetDate))) {
+    throw new Error(`targetDate is not a valid date: ${input.targetDate}`);
+  }
+
+  const property = await prisma.property.findFirst({
+    where: { id: propertyId, tenantId },
+    select: { id: true },
+  });
+  if (!property) {
+    throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
+  }
+
+  const created = await prisma.constructionMilestone.create({
+    data: {
+      tenantId,
+      propertyId,
+      title: input.title,
+      description: input.description ?? null,
+      targetDate: new Date(input.targetDate),
+      status: input.status ?? MilestoneStatusValue.PENDING,
+    },
+  });
+
+  return toMilestoneEntry(created);
+}
+
+/**
+ * Updates a milestone's status, stamping completionDate automatically when
+ * it reaches COMPLETED (and clearing it if moved back off COMPLETED, so the
+ * row can't claim a completion date for work that isn't finished).
+ *
+ * Uses `updateMany` with `id` + `tenantId` combined in one atomic `where`,
+ * the same reasoning as revokeTenantApiKey() in ./apiKeys.ts.
+ */
+export async function updateMilestoneStatus(
+  tenantId: string,
+  milestoneId: string,
+  status: MilestoneEntry["status"],
+): Promise<void> {
+  toMilestoneStatus(status);
+
+  const result = await prisma.constructionMilestone.updateMany({
+    where: { id: milestoneId, tenantId },
+    data: {
+      status,
+      completionDate: status === MilestoneStatusValue.COMPLETED ? new Date() : null,
+    },
+  });
+
+  if (result.count === 0) {
+    throw new Error(`Milestone ${milestoneId} was not found for tenant ${tenantId}.`);
+  }
 }

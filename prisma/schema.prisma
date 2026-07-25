@@ -29,31 +29,6 @@ datasource db {
 // Role, PaymentStatus, and ApiKeyStatus are deliberately NOT Prisma `enum`
 // blocks, unlike the ones below — see the comment on User.role for why.
 
-enum PropertyStatus {
-  PLANNING
-  UNDER_CONSTRUCTION
-  COMPLETED
-}
-
-/// 10-stage purchase-through-occupancy roadmap. NOTE: this is NOT the same
-/// lifecycle as the 10 labels currently hardcoded in
-/// src/components/ui/RentalRoadmap.tsx ("Project Delivered" ... "Property
-/// Leased") — that component and this enum describe two different business
-/// processes that happen to both have 10 steps. Flagged in LOGS.md; the
-/// component needs updating to match this enum, it is not done here.
-enum RentalStage {
-  RESERVATION
-  SPA_SIGNED
-  LEGAL_REVIEW
-  VENDORS_ENGAGED
-  VISA_SUBMISSION
-  VISA_APPROVED
-  CONSTRUCTION_START
-  INTERIOR_CHOICES
-  HANDOVER
-  RENTAL_ACTIVE
-}
-
 /// Matches CLAUDE.md's `ai_logs.status` ("running|success|failed") as a real
 /// enum instead of an unconstrained varchar — a deliberate tightening, not a
 /// deviation; the original doc's three values are preserved exactly.
@@ -61,17 +36,6 @@ enum AiLogStatus {
   RUNNING
   SUCCESS
   FAILED
-}
-
-/// Shared status enum for both ConstructionMilestone and VisaStep — one
-/// generic progress state (not-started/in-progress/done) fits both domains
-/// identically, so this is deliberately not split into two near-duplicate
-/// enums the way PropertyStatus/PaymentStatus/ApiKeyStatus each describe a
-/// genuinely distinct domain concept.
-enum MilestoneStatus {
-  PENDING
-  IN_PROGRESS
-  COMPLETED
 }
 
 // ── Tenancy & identity ──────────────────────────────────────────
@@ -184,7 +148,14 @@ model Property {
   sqm            Float
   energyClass    String         @map("energy_class")
   imageUrl       String         @map("image_url")
-  status         PropertyStatus @default(PLANNING)
+  /// String, not a Prisma `enum PropertyStatus` — same root cause and fix as
+  /// User.role (see that field's comment): Prisma 7's generator requires a
+  /// real native Postgres enum type for any Prisma `enum` field, and
+  /// properties.status is `text + check` like every other status column in
+  /// this schema. Latent until admin property create/edit (src/lib/data/
+  /// projects.ts's createProperty/updateProperty) became the first Prisma
+  /// write to this column.
+  status         String         @default("PLANNING")
   mapUrl         String         @map("map_url")
   pptUrl         String?        @map("ppt_url")
   createdAt      DateTime       @default(now()) @map("created_at")
@@ -208,7 +179,12 @@ model PropertyOwnership {
   tenantId    String      @map("tenant_id") @db.Uuid
   userId      String      @map("user_id")
   propertyId  String      @map("property_id") @db.Uuid
-  rentalStage RentalStage @default(RESERVATION) @map("rental_stage")
+  /// String, not a Prisma `enum RentalStage` — same root cause and fix as
+  /// User.role. rental_stage is `text + check`, never a native Postgres
+  /// enum. Latent until admin rental-stage updates (src/lib/data/
+  /// propertyOwnership.ts's updateRentalStage) became the first Prisma
+  /// write to this column.
+  rentalStage String      @default("RESERVATION") @map("rental_stage")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
@@ -281,7 +257,12 @@ model ConstructionMilestone {
   propertyId     String          @map("property_id") @db.Uuid
   title          String
   description    String?
-  status         MilestoneStatus @default(PENDING)
+  /// String, not a Prisma `enum MilestoneStatus` — same root cause and fix
+  /// as User.role. construction_milestones.status is `text + check`, never
+  /// a native Postgres enum. Latent until admin milestone create/update
+  /// (src/lib/data/construction.ts's createMilestone/updateMilestoneStatus)
+  /// became the first Prisma write to this column.
+  status         String          @default("PENDING")
   targetDate     DateTime        @map("target_date") @db.Date
   completionDate DateTime?       @map("completion_date") @db.Date
   createdAt      DateTime        @default(now()) @map("created_at")
@@ -317,7 +298,15 @@ model VisaStep {
   stepOrder   Int             @map("step_order")
   title       String
   description String?
-  status      MilestoneStatus @default(PENDING)
+  /// String, not a Prisma `enum MilestoneStatus` — same root cause and fix
+  /// as User.role (shares the same underlying status vocabulary as
+  /// ConstructionMilestone above, but kept as its own local const in
+  /// src/lib/data/visa.ts rather than a shared import, matching this
+  /// project's established one-file-one-const convention). visa_steps.status
+  /// is `text + check`, never a native Postgres enum. Latent until admin
+  /// visa-step create/update (createVisaStep/updateVisaStepStatus) became
+  /// the first Prisma write to this column.
+  status      String          @default("PENDING")
   completedAt DateTime?       @map("completed_at")
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")

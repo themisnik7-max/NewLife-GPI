@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { UserPlus } from "lucide-react";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { ClientTable } from "@/components/ui/ClientTable";
@@ -49,7 +51,22 @@ export default async function DashboardPage() {
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
         />
-        <main className="flex-1 bg-stone-50 p-8">
+        <main className="flex-1 space-y-4 bg-stone-50 p-8">
+          {isAdmin && (
+            <div className="flex justify-end">
+              {/* Links to the existing Clerk <OrganizationProfile /> invite
+                  flow (built with Clerk Organizations) rather than adding a
+                  second, parallel add-client mechanism — it was already
+                  built, just not reachable from where an admin looks for it. */}
+              <Link
+                href="/dashboard/team"
+                className="inline-flex items-center gap-1.5 rounded-md bg-aegean-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-aegean-700"
+              >
+                <UserPlus size={14} aria-hidden="true" />
+                Invite Client
+              </Link>
+            </div>
+          )}
           {isAdmin ? <AdminClientList tenantId={currentUser.tenantId} /> : <OwnOverview tenantId={currentUser.tenantId} userId={currentUser.userId} />}
         </main>
       </div>

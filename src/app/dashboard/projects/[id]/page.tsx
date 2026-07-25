@@ -1,9 +1,11 @@
 import { notFound } from "next/navigation";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
-import { ProjectDetail } from "@/components/ui/ProjectDetail";
+import { PropertyDetailWithEdit } from "./PropertyDetailWithEdit";
+import { MilestoneAdminPanel } from "./MilestoneAdminPanel";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getProjectById } from "@/lib/data/projects";
+import { getPropertyMilestones } from "@/lib/data/construction";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
@@ -17,6 +19,7 @@ import { Role } from "@/lib/auth/role";
 
 export default async function ProjectDetailPage({ params }: { params: { id: string } }) {
   const currentUser = await getCurrentUser();
+  const isAdmin = currentUser?.role === Role.ADMIN;
   const [project, notifications] = await Promise.all([
     currentUser ? getProjectById(params.id, currentUser.tenantId) : Promise.resolve(null),
     currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
@@ -26,13 +29,15 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
     notFound();
   }
 
+  // Milestones are only fetched for the admin panel — the client-facing view
+  // of this page has never shown them (they live on /dashboard/construction),
+  // so a non-admin visit shouldn't pay for the query at all.
+  const milestones =
+    isAdmin && currentUser ? await getPropertyMilestones(currentUser.tenantId, project.id) : [];
+
   return (
     <div className="flex min-h-screen">
-      <Sidebar
-        activeKey="projects"
-        client={{ property: currentUser?.email ?? "" }}
-        isAdmin={currentUser?.role === Role.ADMIN}
-      />
+      <Sidebar activeKey="projects" client={{ property: currentUser?.email ?? "" }} isAdmin={isAdmin} />
       <div className="flex flex-1 flex-col">
         <TopNav
           title={project.name}
@@ -42,8 +47,9 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
         />
-        <main className="flex-1 bg-stone-50 p-8">
-          <ProjectDetail project={project} />
+        <main className="flex-1 space-y-6 bg-stone-50 p-8">
+          <PropertyDetailWithEdit project={project} isAdmin={isAdmin} />
+          {isAdmin && <MilestoneAdminPanel propertyId={project.id} milestones={milestones} />}
         </main>
       </div>
     </div>

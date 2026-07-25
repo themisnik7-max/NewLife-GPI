@@ -26,6 +26,13 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentLedger: {
       findMany: vi.fn(),
+      create: vi.fn(),
+    },
+    property: {
+      findFirst: vi.fn(),
+    },
+    user: {
+      findFirst: vi.fn(),
     },
     $transaction: vi.fn(),
   },
@@ -37,7 +44,7 @@ import {
   getTenantApiKeys,
   revokeTenantApiKey,
 } from "@/lib/data/apiKeys";
-import { getTenantLedger, getUserLedger, recordTenantPayment } from "@/lib/data/ledgers";
+import { createLedgerEntry, getTenantLedger, getUserLedger, recordTenantPayment } from "@/lib/data/ledgers";
 import { prisma } from "@/lib/prisma";
 
 const mockedFindManyKeys = vi.mocked(prisma.encryptedApiKey.findMany);
@@ -46,6 +53,9 @@ const mockedCreateKey = vi.mocked(prisma.encryptedApiKey.create);
 const mockedUpdateManyKeys = vi.mocked(prisma.encryptedApiKey.updateMany);
 const mockedUpdateKey = vi.mocked(prisma.encryptedApiKey.update);
 const mockedFindManyLedger = vi.mocked(prisma.paymentLedger.findMany);
+const mockedCreateLedger = vi.mocked(prisma.paymentLedger.create);
+const mockedPropertyFindFirst = vi.mocked(prisma.property.findFirst);
+const mockedUserFindFirst = vi.mocked(prisma.user.findFirst);
 const mockedTransaction = vi.mocked(prisma.$transaction);
 
 // A real, valid 32-byte AES-256 key, base64-encoded — encryption itself is
@@ -76,6 +86,9 @@ beforeEach(() => {
   mockedUpdateManyKeys.mockReset();
   mockedUpdateKey.mockReset();
   mockedFindManyLedger.mockReset();
+  mockedCreateLedger.mockReset();
+  mockedPropertyFindFirst.mockReset();
+  mockedUserFindFirst.mockReset();
   mockedTransaction.mockReset();
   // apiKeys.ts logs each operation for attribution (see its own comments on
   // why userId is logged rather than filtered on) — suppressed here to keep
@@ -663,5 +676,93 @@ describe("ledgers.ts", () => {
       );
       expect(mockedTransaction).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("createLedgerEntry", () => {
+  const PROPERTY_1 = "44444444-4444-4444-4444-444444444444";
+
+  function buildCreatedRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: "ledger-new",
+      tenantId: TENANT_A,
+      propertyId: PROPERTY_1,
+      userId: USER_1,
+      amount: 15000,
+      amountPaid: 0,
+      dueDate: new Date("2026-09-01T00:00:00.000Z"),
+      isDelayed: false,
+      penaltyAmount: 0,
+      status: "PENDING",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      ...overrides,
+    };
+  }
+
+  it("creates a PENDING installment once both the property and the user are confirmed to belong to the tenant", async () => {
+    mockedPropertyFindFirst.mockResolvedValueOnce({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValueOnce({ id: USER_1 } as never);
+    mockedCreateLedger.mockResolvedValueOnce(buildCreatedRow() as never);
+
+    const result = await createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, 15000, "2026-09-01");
+
+    expect(mockedCreateLedger).toHaveBeenCalledWith({
+      data: {
+        tenantId: TENANT_A,
+        propertyId: PROPERTY_1,
+        userId: USER_1,
+        amount: 15000,
+        dueDate: new Date("2026-09-01"),
+        status: "PENDING",
+      },
+    });
+    expect(result.status).toBe("PENDING");
+    expect(result.dueDate).toBe("2026-09-01");
+  });
+
+  it("throws without creating anything when the property belongs to a different tenant", async () => {
+    mockedPropertyFindFirst.mockResolvedValueOnce(null);
+    mockedUserFindFirst.mockResolvedValueOnce({ id: USER_1 } as never);
+
+    await expect(createLedgerEntry(TENANT_B, PROPERTY_1, USER_1, 100, "2026-09-01")).rejects.toThrow(
+      /Property .* was not found for tenant/,
+    );
+    expect(mockedCreateLedger).not.toHaveBeenCalled();
+  });
+
+  it("throws without creating anything when the user belongs to a different tenant", async () => {
+    mockedPropertyFindFirst.mockResolvedValueOnce({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValueOnce(null);
+
+    await expect(createLedgerEntry(TENANT_A, PROPERTY_1, "user_other", 100, "2026-09-01")).rejects.toThrow(
+      /User .* was not found for tenant/,
+    );
+    expect(mockedCreateLedger).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a zero amount", 0, "2026-09-01", /amount must be a positive, finite number/],
+    ["a negative amount", -50, "2026-09-01", /amount must be a positive, finite number/],
+    ["a non-finite amount", Number.NaN, "2026-09-01", /amount must be a positive, finite number/],
+    ["an invalid dueDate", 100, "not-a-date", /dueDate is not a valid date/],
+  ])("rejects %s without touching the database at all", async (_label, amount, dueDate, expected) => {
+    await expect(createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, amount, dueDate)).rejects.toThrow(expected);
+    expect(mockedPropertyFindFirst).not.toHaveBeenCalled();
+    expect(mockedCreateLedger).not.toHaveBeenCalled();
+  });
+
+  it("computes isDelayed from the current clock, so a past-due new installment is immediately flagged", async () => {
+    // Mirrors toLedgerEntry's documented behavior: isDelayed is always
+    // derived, never trusted from the stored column.
+    mockedPropertyFindFirst.mockResolvedValueOnce({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValueOnce({ id: USER_1 } as never);
+    mockedCreateLedger.mockResolvedValueOnce(
+      buildCreatedRow({ dueDate: new Date("2020-01-01T00:00:00.000Z") }) as never,
+    );
+
+    const result = await createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, 15000, "2020-01-01");
+
+    expect(result.isDelayed).toBe(true);
   });
 });

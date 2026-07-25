@@ -16,22 +16,36 @@ vi.mock("@/lib/prisma", () => ({
     property: {
       findFirst: vi.fn(),
     },
+    user: {
+      findFirst: vi.fn(),
+    },
     constructionMilestone: {
       findMany: vi.fn(),
+      create: vi.fn(),
+      updateMany: vi.fn(),
     },
     visaStep: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
+      create: vi.fn(),
+      updateMany: vi.fn(),
     },
   },
 }));
 
-import { getPropertyMilestones } from "@/lib/data/construction";
-import { getUserVisaSteps } from "@/lib/data/visa";
+import { createMilestone, getPropertyMilestones, updateMilestoneStatus } from "@/lib/data/construction";
+import { createVisaStep, getUserVisaSteps, updateVisaStepStatus } from "@/lib/data/visa";
 import { prisma } from "@/lib/prisma";
 
 const mockedFindFirstProperty = vi.mocked(prisma.property.findFirst);
+const mockedFindFirstUser = vi.mocked(prisma.user.findFirst);
 const mockedFindManyMilestones = vi.mocked(prisma.constructionMilestone.findMany);
+const mockedCreateMilestone = vi.mocked(prisma.constructionMilestone.create);
+const mockedUpdateManyMilestones = vi.mocked(prisma.constructionMilestone.updateMany);
 const mockedFindManySteps = vi.mocked(prisma.visaStep.findMany);
+const mockedFindFirstStep = vi.mocked(prisma.visaStep.findFirst);
+const mockedCreateStep = vi.mocked(prisma.visaStep.create);
+const mockedUpdateManySteps = vi.mocked(prisma.visaStep.updateMany);
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
@@ -45,8 +59,14 @@ const USER_1 = "user_abc123";
 // src/app/api/webhooks/clerk/route.test.ts for why that's avoided).
 beforeEach(() => {
   mockedFindFirstProperty.mockReset();
+  mockedFindFirstUser.mockReset();
   mockedFindManyMilestones.mockReset();
+  mockedCreateMilestone.mockReset();
+  mockedUpdateManyMilestones.mockReset();
   mockedFindManySteps.mockReset();
+  mockedFindFirstStep.mockReset();
+  mockedCreateStep.mockReset();
+  mockedUpdateManySteps.mockReset();
 });
 
 describe("getPropertyMilestones", () => {
@@ -146,6 +166,31 @@ describe("getPropertyMilestones", () => {
       orderBy: { targetDate: "asc" },
     });
   });
+
+  it("throws on an unrecognized status value from the database, rather than mistyping the row", async () => {
+    // ConstructionMilestone.status is a Prisma String column, not a narrowed
+    // enum (see the comment on it in prisma/schema.prisma) — a bad value is
+    // reachable at runtime and must fail loudly here.
+    mockedFindFirstProperty.mockResolvedValueOnce({ id: PROPERTY_A } as never);
+    mockedFindManyMilestones.mockResolvedValueOnce([
+      {
+        id: "milestone-3",
+        tenantId: TENANT_A,
+        propertyId: PROPERTY_A,
+        title: "Bad row",
+        description: null,
+        status: "ON_HOLD",
+        targetDate: new Date("2026-09-01T00:00:00.000Z"),
+        completionDate: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ] as never);
+
+    await expect(getPropertyMilestones(TENANT_A, PROPERTY_A)).rejects.toThrow(
+      /Unrecognized construction milestone status/,
+    );
+  });
 });
 
 describe("getUserVisaSteps", () => {
@@ -218,5 +263,225 @@ describe("getUserVisaSteps", () => {
       where: { tenantId: TENANT_A, userId: USER_1 },
       orderBy: { stepOrder: "asc" },
     });
+  });
+
+  it("throws on an unrecognized status value from the database, rather than mistyping the row", async () => {
+    // VisaStep.status is a Prisma String column, not a narrowed enum (see
+    // the comment on it in prisma/schema.prisma) — a bad value is reachable
+    // at runtime and must fail loudly here.
+    mockedFindManySteps.mockResolvedValueOnce([
+      {
+        id: "step-3",
+        tenantId: TENANT_A,
+        userId: USER_1,
+        stepOrder: 3,
+        title: "Bad row",
+        description: null,
+        status: "ON_HOLD",
+        completedAt: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ] as never);
+
+    await expect(getUserVisaSteps(TENANT_A, USER_1)).rejects.toThrow(/Unrecognized visa step status/);
+  });
+});
+
+const MILESTONE_ROW = {
+  id: "milestone-new",
+  tenantId: TENANT_A,
+  propertyId: PROPERTY_A,
+  title: "Roofing",
+  description: null,
+  status: "PENDING",
+  targetDate: new Date("2026-11-01T00:00:00.000Z"),
+  completionDate: null,
+  createdAt: new Date("2026-01-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+};
+
+describe("createMilestone", () => {
+  it("creates a milestone once the property is confirmed to belong to the tenant", async () => {
+    mockedFindFirstProperty.mockResolvedValueOnce({ id: PROPERTY_A } as never);
+    mockedCreateMilestone.mockResolvedValueOnce(MILESTONE_ROW as never);
+
+    await createMilestone(TENANT_A, PROPERTY_A, { title: "Roofing", targetDate: "2026-11-01" });
+
+    expect(mockedCreateMilestone).toHaveBeenCalledWith({
+      data: {
+        tenantId: TENANT_A,
+        propertyId: PROPERTY_A,
+        title: "Roofing",
+        description: null,
+        targetDate: new Date("2026-11-01"),
+        status: "PENDING",
+      },
+    });
+  });
+
+  it("THROWS (rather than returning empty like the read path) when writing against another tenant's property", async () => {
+    mockedFindFirstProperty.mockResolvedValueOnce(null);
+
+    await expect(createMilestone(TENANT_B, PROPERTY_A, { title: "X", targetDate: "2026-11-01" })).rejects.toThrow(
+      /was not found for tenant/,
+    );
+    expect(mockedCreateMilestone).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an empty title", { title: "   ", targetDate: "2026-11-01" }, /title must not be empty/],
+    ["an invalid targetDate", { title: "X", targetDate: "nope" }, /targetDate is not a valid date/],
+  ])("rejects %s without touching the database", async (_label, input, expected) => {
+    await expect(createMilestone(TENANT_A, PROPERTY_A, input)).rejects.toThrow(expected);
+    expect(mockedFindFirstProperty).not.toHaveBeenCalled();
+    expect(mockedCreateMilestone).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateMilestoneStatus", () => {
+  it("stamps a completionDate when the milestone reaches COMPLETED", async () => {
+    mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 1 } as never);
+
+    await updateMilestoneStatus(TENANT_A, "milestone-1", "COMPLETED");
+
+    const callArgs = mockedUpdateManyMilestones.mock.calls[0][0];
+    expect(callArgs.where).toEqual({ id: "milestone-1", tenantId: TENANT_A });
+    expect(callArgs.data.status).toBe("COMPLETED");
+    expect(callArgs.data.completionDate).toBeInstanceOf(Date);
+  });
+
+  it("clears completionDate when a milestone is moved back off COMPLETED", async () => {
+    // A row must never claim a completion date for work that isn't finished.
+    mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 1 } as never);
+
+    await updateMilestoneStatus(TENANT_A, "milestone-1", "IN_PROGRESS");
+
+    expect(mockedUpdateManyMilestones.mock.calls[0][0].data.completionDate).toBeNull();
+  });
+
+  it("throws when the milestone belongs to a different tenant (updateMany matched nothing)", async () => {
+    mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 0 } as never);
+
+    await expect(updateMilestoneStatus(TENANT_B, "milestone-1", "COMPLETED")).rejects.toThrow(
+      /was not found for tenant/,
+    );
+  });
+
+  it("rejects an unrecognized status before writing", async () => {
+    await expect(updateMilestoneStatus(TENANT_A, "milestone-1", "ON_HOLD" as never)).rejects.toThrow(
+      /Unrecognized construction milestone status/,
+    );
+    expect(mockedUpdateManyMilestones).not.toHaveBeenCalled();
+  });
+});
+
+const STEP_ROW = {
+  id: "step-new",
+  tenantId: TENANT_A,
+  userId: USER_1,
+  stepOrder: 3,
+  title: "Biometrics appointment",
+  description: null,
+  status: "PENDING",
+  completedAt: null,
+  createdAt: new Date("2026-01-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+};
+
+describe("createVisaStep", () => {
+  it("auto-assigns the next stepOrder after the client's current highest", async () => {
+    // VisaStep has @@unique([userId, stepOrder]) — hand-typed numbering
+    // would otherwise collide and surface as a raw constraint error.
+    mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
+    mockedFindFirstStep.mockResolvedValueOnce({ stepOrder: 2 } as never);
+    mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
+
+    await createVisaStep(TENANT_A, USER_1, { title: "Biometrics appointment" });
+
+    expect(mockedCreateStep).toHaveBeenCalledWith({
+      data: {
+        tenantId: TENANT_A,
+        userId: USER_1,
+        stepOrder: 3,
+        title: "Biometrics appointment",
+        description: null,
+        status: "PENDING",
+      },
+    });
+  });
+
+  it("starts at stepOrder 1 for a client with no steps yet", async () => {
+    mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
+    mockedFindFirstStep.mockResolvedValueOnce(null);
+    mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
+
+    await createVisaStep(TENANT_A, USER_1, { title: "Submit application" });
+
+    expect(mockedCreateStep.mock.calls[0][0].data.stepOrder).toBe(1);
+  });
+
+  it("honors an explicitly supplied stepOrder, for inserting out of sequence", async () => {
+    mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
+    mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
+
+    await createVisaStep(TENANT_A, USER_1, { title: "Inserted step", stepOrder: 2 });
+
+    expect(mockedFindFirstStep).not.toHaveBeenCalled();
+    expect(mockedCreateStep.mock.calls[0][0].data.stepOrder).toBe(2);
+  });
+
+  it("throws when the user belongs to a different tenant", async () => {
+    mockedFindFirstUser.mockResolvedValueOnce(null);
+
+    await expect(createVisaStep(TENANT_B, USER_1, { title: "X" })).rejects.toThrow(/was not found for tenant/);
+    expect(mockedCreateStep).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty title without touching the database", async () => {
+    await expect(createVisaStep(TENANT_A, USER_1, { title: "  " })).rejects.toThrow(/title must not be empty/);
+    expect(mockedFindFirstUser).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-positive explicit stepOrder", async () => {
+    mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
+
+    await expect(createVisaStep(TENANT_A, USER_1, { title: "X", stepOrder: 0 })).rejects.toThrow(
+      /stepOrder must be a positive integer/,
+    );
+    expect(mockedCreateStep).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateVisaStepStatus", () => {
+  it("stamps completedAt when the step reaches COMPLETED", async () => {
+    mockedUpdateManySteps.mockResolvedValueOnce({ count: 1 } as never);
+
+    await updateVisaStepStatus(TENANT_A, "step-1", "COMPLETED");
+
+    const callArgs = mockedUpdateManySteps.mock.calls[0][0];
+    expect(callArgs.where).toEqual({ id: "step-1", tenantId: TENANT_A });
+    expect(callArgs.data.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("clears completedAt when a step is moved back off COMPLETED", async () => {
+    mockedUpdateManySteps.mockResolvedValueOnce({ count: 1 } as never);
+
+    await updateVisaStepStatus(TENANT_A, "step-1", "PENDING");
+
+    expect(mockedUpdateManySteps.mock.calls[0][0].data.completedAt).toBeNull();
+  });
+
+  it("throws when the step belongs to a different tenant", async () => {
+    mockedUpdateManySteps.mockResolvedValueOnce({ count: 0 } as never);
+
+    await expect(updateVisaStepStatus(TENANT_B, "step-1", "COMPLETED")).rejects.toThrow(/was not found for tenant/);
+  });
+
+  it("rejects an unrecognized status before writing", async () => {
+    await expect(updateVisaStepStatus(TENANT_A, "step-1", "ON_HOLD" as never)).rejects.toThrow(
+      /Unrecognized visa step status/,
+    );
+    expect(mockedUpdateManySteps).not.toHaveBeenCalled();
   });
 });

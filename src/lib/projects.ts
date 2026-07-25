@@ -30,11 +30,15 @@ export interface Project {
   pptUrl: string | null;
 }
 
-function buildMapUrl(address: string): string {
+// Exported (not just used internally by MOCK_PROJECTS below): src/lib/data/
+// projects.ts's createProperty() reuses these same two derivations so an
+// admin creating a real property isn't required to hand-type a Maps link or
+// source a real photo for a field with no upload mechanism behind it yet.
+export function buildMapUrl(address: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
 }
 
-function buildPlaceholderImageUrl(label: string): string {
+export function buildPlaceholderImageUrl(label: string): string {
   return `https://placehold.co/800x450?text=${encodeURIComponent(label)}`;
 }
 

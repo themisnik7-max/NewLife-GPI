@@ -112,6 +112,58 @@ export async function getUserLedger(tenantId: string, userId: string): Promise<L
 }
 
 /**
+ * Creates a new payment installment for a client against a property — the
+ * missing counterpart to recordTenantPayment() below, which can only pay
+ * against a row that already exists. Before this, nothing in the app could
+ * create a ledger row at all; every installment came from manual seeding.
+ *
+ * Verifies both the property and the user belong to `tenantId` before
+ * writing, the same reasoning as assignPropertyToClient() in
+ * ./propertyOwnership.ts: this is a Prisma-path write, so RLS provides no
+ * protection and a client-supplied id could otherwise reference a real row
+ * in another tenant.
+ */
+export async function createLedgerEntry(
+  tenantId: string,
+  propertyId: string,
+  userId: string,
+  amount: number,
+  dueDate: string,
+): Promise<LedgerEntry> {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("amount must be a positive, finite number.");
+  }
+  if (Number.isNaN(Date.parse(dueDate))) {
+    throw new Error(`dueDate is not a valid date: ${dueDate}`);
+  }
+
+  const [property, user] = await Promise.all([
+    prisma.property.findFirst({ where: { id: propertyId, tenantId }, select: { id: true } }),
+    prisma.user.findFirst({ where: { id: userId, tenantId }, select: { id: true } }),
+  ]);
+
+  if (!property) {
+    throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
+  }
+  if (!user) {
+    throw new Error(`User ${userId} was not found for tenant ${tenantId}.`);
+  }
+
+  const created = await prisma.paymentLedger.create({
+    data: {
+      tenantId,
+      propertyId,
+      userId,
+      amount,
+      dueDate: new Date(dueDate),
+      status: PaymentStatus.PENDING,
+    },
+  });
+
+  return toLedgerEntry(created, new Date());
+}
+
+/**
  * Records a payment against a specific installment.
  *
  * Runs inside a single interactive transaction so the "does this ledger
