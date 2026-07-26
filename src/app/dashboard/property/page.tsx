@@ -1,22 +1,23 @@
-import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { PropertyAssetCard } from "@/components/ui/PropertyAssetCard";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
-import { getOwnedProperty } from "@/lib/data/propertyOwnership";
+import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
 export default async function PropertyPage() {
-  const { getToken } = await auth();
-  // Fetched through Supabase PostgREST (RLS-enforced), not Prisma — see
-  // ARCHITECTURE.md's "Clerk ↔ Supabase Third-Party Auth" section.
-  const [token, currentUser] = await Promise.all([getToken(), getCurrentUser()]);
-  const [ownedProperty, notifications] = await Promise.all([
-    currentUser ? getOwnedProperty(token, currentUser.tenantId) : Promise.resolve(null),
+  const currentUser = await getCurrentUser();
+  // Prisma path, scoped explicitly to this user's own id — the previous
+  // Supabase/PostgREST version leaned on RLS to add that filter implicitly.
+  const [snapshot, notifications] = await Promise.all([
+    currentUser
+      ? getClientPropertySnapshot(currentUser.tenantId, currentUser.userId)
+      : Promise.resolve({ property: null, rentalStage: null }),
     currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
   ]);
+  const ownedProperty = snapshot.property;
 
   return (
     <div className="flex min-h-screen">

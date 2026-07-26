@@ -36,8 +36,6 @@ Copy `.env.example` and fill in real values. Split across two files exactly as `
 | `CLERK_SECRET_KEY` | `.env.local` | Required | Clerk Dashboard → API Keys |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` / `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | `.env.local` | Required | Your own route paths (`/sign-in`, `/sign-up` — already the values in `.env.example`) |
 | `CLERK_WEBHOOK_SECRET` | `.env.local` | **Not set yet** | Clerk Dashboard → Webhooks → your endpoint → Signing Secret (see §2 below — the endpoint has to exist before this secret exists) |
-| `NEXT_PUBLIC_SUPABASE_URL` | `.env.local` | **Not set yet** | Supabase Dashboard → Project Settings → API |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `.env.local` | **Not set yet** | Same page |
 | `API_KEY_ENCRYPTION_SECRET` | `.env` | **Not set yet** | Generate yourself: `openssl rand -base64 32`. Must decode to exactly 32 bytes — `src/lib/data/apiKeys.ts` throws otherwise. |
 
 ⚠️ `API_KEY_ENCRYPTION_SECRET` has no versioning in this schema (see `.env.example`'s own comment and `EncryptedApiKey` in `prisma/schema.prisma`). Generate it once, store it durably (e.g. in your password manager, not just in Vercel's dashboard alone), and treat rotating it as **destroying every previously-encrypted API key** — there is no re-encryption migration path today.
@@ -48,10 +46,9 @@ Copy `.env.example` and fill in real values. Split across two files exactly as `
 
 ## 2. Dashboard clickthroughs
 
-These cannot be scripted — they require clicking through the Clerk and Supabase dashboards by hand. Full detail and rationale: `ARCHITECTURE.md` → "Clerk ↔ Supabase Third-Party Auth". Condensed as an ordered checklist:
+These cannot be scripted — they require clicking through the Clerk dashboard by hand.
 
-- [ ] **Clerk Dashboard** → Supabase integration setup page → **Activate Supabase integration** → copy the revealed Clerk domain.
-- [ ] **Supabase Dashboard** → Authentication → Sign In / Providers → **Third-Party Auth** → Add provider → Clerk → paste the domain from the previous step.
+> **No longer required (2026-07-27):** the Clerk ↔ Supabase Third-Party Auth bridge, and the `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` variables it needed. The app reads Postgres exclusively through Prisma now; nothing goes through PostgREST. See `ARCHITECTURE.md` → "Data access: Prisma only". Supabase is still the database — only its JS client was removed.
 - [ ] If you develop locally against the Supabase CLI (not just the hosted dashboard), create `supabase/config.toml` (it does not exist in this repo yet) with:
   ```toml
   [auth.third_party.clerk]
@@ -151,14 +148,12 @@ All four must pass before deploying — this mirrors `CLAUDE.md`'s standing test
 
 ## 7. Post-deploy verification checklist
 
-Directly from `ARCHITECTURE.md`'s own verification checklist — repeated here so a deploy isn't considered done until these are actually checked against the live environment, not just configured:
+A deploy isn't done until these are actually checked against the live environment, not just configured. Since tenant isolation is now enforced entirely in application code (`ARCHITECTURE.md` → "Data access: Prisma only"), the isolation checks below are the real safety net — there is no RLS backstop behind them:
 
-- [ ] Clerk Dashboard's Supabase integration setup page shows the integration as **active**.
-- [ ] Supabase Dashboard → Third-Party Auth lists Clerk with the correct domain.
-- [ ] A live Clerk session token, decoded with a local/offline JWT decoder (never paste a real token into a hosted decoding site), contains `sub`, `role: "authenticated"`, and `publicMetadata`.
-- [ ] A signed-in, non-admin user's request through `getSupabaseClient(token)` returns only their own tenant's rows, never another tenant's.
-- [ ] The same query built with `getSupabaseClient(null)` (no token) returns zero rows from every RLS-protected table — confirms default-deny.
-- [ ] An admin user (`publicMetadata.role === "admin"`) can read `encrypted_api_keys`/`ai_logs`; a non-admin user gets zero rows from the same query.
+- [ ] Sign in as a **client** and confirm every dashboard page renders their own data with no admin controls anywhere.
+- [ ] Sign in as an **admin** and confirm `/dashboard/team` and `/dashboard/projects/new` load, and that the Overview shows the client table.
+- [ ] As a **client**, request `/dashboard/team` and `/dashboard/projects/new` directly by URL — both must return 404, not merely hide their buttons.
+- [ ] As an **admin who owns no property**, confirm `/dashboard/property` shows the empty state rather than another tenant member's property (this is the `userId`-filter trap called out in `ARCHITECTURE.md`).
 - [ ] Trigger a real Clerk `user.created` event (sign up a test user against production) and confirm a matching row appears in `public.users` with a real, freshly-provisioned `tenant_id` — not a shared/default one.
 - [ ] Submit a test webhook delivery from Clerk's Dashboard (Webhooks → your endpoint → **Testing** tab) and confirm it returns `200` and appears correctly in your logs.
 

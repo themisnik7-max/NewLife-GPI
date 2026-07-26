@@ -1,20 +1,21 @@
-import { auth } from "@clerk/nextjs/server";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { RentalRoadmap } from "@/components/ui/RentalRoadmap";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
-import { getCurrentRentalStage } from "@/lib/data/propertyOwnership";
+import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
 export default async function RentalPage() {
-  const { getToken } = await auth();
-  const [token, currentUser] = await Promise.all([getToken(), getCurrentUser()]);
-  const [currentStage, notifications] = await Promise.all([
-    currentUser ? getCurrentRentalStage(token, currentUser.tenantId) : Promise.resolve(null),
+  const currentUser = await getCurrentUser();
+  const [snapshot, notifications] = await Promise.all([
+    currentUser
+      ? getClientPropertySnapshot(currentUser.tenantId, currentUser.userId)
+      : Promise.resolve({ property: null, rentalStage: null }),
     currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
   ]);
+  const currentStage = snapshot.rentalStage;
 
   return (
     <div className="flex min-h-screen">
