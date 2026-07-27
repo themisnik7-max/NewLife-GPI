@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
 import type { VisaStep } from "@/generated/prisma/client";
 
 /**
@@ -96,10 +97,11 @@ export interface VisaStepInput {
  * a step out of sequence.
  */
 export async function createVisaStep(
-  tenantId: string,
+  actor: ActorContext,
   userId: string,
   input: VisaStepInput,
 ): Promise<VisaStepEntry> {
+  const tenantId = actor.tenantId;
   if (!input.title?.trim()) {
     throw new Error("Visa step title must not be empty.");
   }
@@ -121,15 +123,28 @@ export async function createVisaStep(
     throw new Error("stepOrder must be a positive integer.");
   }
 
-  const created = await prisma.visaStep.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const step = await tx.visaStep.create({
+      data: {
+        tenantId,
+        userId,
+        stepOrder,
+        title: input.title,
+        description: input.description ?? null,
+        status: input.status ?? MilestoneStatusValue.PENDING,
+      },
+    });
+
+    await recordAuditEvent(tx, {
       tenantId,
-      userId,
-      stepOrder,
-      title: input.title,
-      description: input.description ?? null,
-      status: input.status ?? MilestoneStatusValue.PENDING,
-    },
+      actorUserId: actor.actorUserId,
+      entityType: "VisaStep",
+      entityId: step.id,
+      action: AuditAction.CREATE,
+      metadata: { subjectUserId: userId, stepOrder: step.stepOrder, title: step.title },
+    });
+
+    return step;
   });
 
   return toVisaStepEntry(created);
@@ -141,21 +156,40 @@ export async function createVisaStep(
  * updateMilestoneStatus() in ./construction.ts.
  */
 export async function updateVisaStepStatus(
-  tenantId: string,
+  actor: ActorContext,
   visaStepId: string,
   status: VisaStepEntry["status"],
 ): Promise<void> {
+  const tenantId = actor.tenantId;
   toVisaStepStatus(status);
 
-  const result = await prisma.visaStep.updateMany({
-    where: { id: visaStepId, tenantId },
-    data: {
-      status,
-      completedAt: status === MilestoneStatusValue.COMPLETED ? new Date() : null,
-    },
-  });
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.visaStep.findFirst({
+      where: { id: visaStepId, tenantId },
+      select: { status: true },
+    });
+    if (!existing) {
+      throw new Error(`Visa step ${visaStepId} was not found for tenant ${tenantId}.`);
+    }
 
-  if (result.count === 0) {
-    throw new Error(`Visa step ${visaStepId} was not found for tenant ${tenantId}.`);
-  }
+    await tx.visaStep.updateMany({
+      where: { id: visaStepId, tenantId },
+      data: {
+        status,
+        completedAt: status === MilestoneStatusValue.COMPLETED ? new Date() : null,
+      },
+    });
+
+    await recordFieldChanges(
+      tx,
+      {
+        tenantId,
+        actorUserId: actor.actorUserId,
+        entityType: "VisaStep",
+        entityId: visaStepId,
+      },
+      { status: existing.status },
+      { status },
+    );
+  });
 }

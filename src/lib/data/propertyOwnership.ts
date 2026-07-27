@@ -1,8 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { toProject as toProjectFromPrismaRow } from "@/lib/data/projects";
+import { AuditAction, recordAuditEvent, type ActorContext } from "@/lib/data/audit";
 import type { Project } from "@/lib/projects";
-import type { RentalStage } from "@/components/ui/RentalRoadmap";
 
 // PostgREST/Supabase-client path removed (2026-07-27). This module was the
 // only place in the app that read through `@supabase/supabase-js`; every
@@ -22,41 +22,21 @@ import type { RentalStage } from "@/components/ui/RentalRoadmap";
 // client share one tenant, so it would leak the client's property onto the
 // admin's "My Property" page.
 
-const VALID_RENTAL_STAGES: ReadonlySet<string> = new Set([
-  "RESERVATION",
-  "SPA_SIGNED",
-  "LEGAL_REVIEW",
-  "VENDORS_ENGAGED",
-  "VISA_SUBMISSION",
-  "VISA_APPROVED",
-  "CONSTRUCTION_START",
-  "INTERIOR_CHOICES",
-  "HANDOVER",
-  "RENTAL_ACTIVE",
-]);
-
-function toRentalStage(rawStage: string): RentalStage {
-  if (!VALID_RENTAL_STAGES.has(rawStage)) {
-    throw new Error(`Unrecognized rental_stage value from database: ${rawStage}`);
-  }
-  return rawStage as RentalStage;
-}
-
 export interface ClientPropertySnapshot {
   property: Project | null;
-  rentalStage: RentalStage | null;
 }
 
 /**
- * Resolves a single user's owned property and rental stage in one query.
+ * Resolves a single user's owned property.
  *
- * Both live on the same PropertyOwnership row, so they are fetched together
- * rather than as two separate round-trips. Returns nulls (never throws) when
- * the user owns nothing yet — an expected empty state, not an error.
+ * Returns null (never throws) when the user owns nothing yet — an expected
+ * empty state, not an error.
  *
- * Used by every property/rental/construction view, for both a client looking
- * at their own data and an admin drilling into a specific client's — the
- * caller supplies whichever userId it has already authorized.
+ * Rental progress no longer travels with this: it used to return a
+ * `rentalStage` scalar read off the same ownership row, but rental progress
+ * is now a set of per-stage records (src/lib/data/rentalStages.ts) that
+ * pages fetch separately, since most callers of this function never needed
+ * the stage at all.
  */
 export async function getClientPropertySnapshot(tenantId: string, userId: string): Promise<ClientPropertySnapshot> {
   const ownership = await prisma.propertyOwnership.findFirst({
@@ -66,16 +46,10 @@ export async function getClientPropertySnapshot(tenantId: string, userId: string
   });
 
   if (!ownership) {
-    return { property: null, rentalStage: null };
+    return { property: null };
   }
 
-  return {
-    property: toProjectFromPrismaRow(ownership.property),
-    // rentalStage is a Prisma `String` column, not a narrowed enum type (see
-    // its comment in prisma/schema.prisma), so it is validated rather than
-    // passed straight through.
-    rentalStage: toRentalStage(ownership.rentalStage),
-  };
+  return { property: toProjectFromPrismaRow(ownership.property) };
 }
 
 /**
@@ -92,10 +66,11 @@ export async function getClientPropertySnapshot(tenantId: string, userId: string
  * raw Prisma constraint error at the admin.
  */
 export async function assignPropertyToClient(
-  tenantId: string,
+  actor: ActorContext,
   userId: string,
   propertyId: string,
 ): Promise<void> {
+  const tenantId = actor.tenantId;
   const [property, user] = await Promise.all([
     prisma.property.findFirst({ where: { id: propertyId, tenantId }, select: { id: true } }),
     prisma.user.findFirst({ where: { id: userId, tenantId }, select: { id: true } }),
@@ -110,42 +85,26 @@ export async function assignPropertyToClient(
 
   const existing = await prisma.propertyOwnership.findFirst({ where: { userId, propertyId } });
   if (existing) {
+    // Already assigned — no state change, so deliberately no audit row.
+    // Logging a no-op here would put phantom "assigned" events in the trail
+    // for anyone who clicks Assign twice.
     return;
   }
 
-  await prisma.propertyOwnership.create({ data: { tenantId, userId, propertyId } });
-}
+  await prisma.$transaction(async (tx) => {
+    const ownership = await tx.propertyOwnership.create({ data: { tenantId, userId, propertyId } });
 
-/**
- * Advances (or corrects) a client's rental stage.
- *
- * Targets the client's most recently created ownership row, deliberately
- * matching getClientPropertySnapshot()'s own `orderBy: { createdAt: "desc" }`
- * — otherwise an admin could update a stage that no screen in the app
- * actually displays.
- */
-export async function updateRentalStage(
-  tenantId: string,
-  userId: string,
-  newStage: RentalStage,
-): Promise<void> {
-  // Validates against the same VALID_RENTAL_STAGES set the read path uses,
-  // so a bad value fails here rather than landing in the database and
-  // throwing on every subsequent read instead.
-  toRentalStage(newStage);
-
-  const ownership = await prisma.propertyOwnership.findFirst({
-    where: { userId, tenantId },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
-
-  if (!ownership) {
-    throw new Error(`No property ownership was found for user ${userId} in tenant ${tenantId}.`);
-  }
-
-  await prisma.propertyOwnership.update({
-    where: { id: ownership.id },
-    data: { rentalStage: newStage },
+    await recordAuditEvent(tx, {
+      tenantId,
+      actorUserId: actor.actorUserId,
+      entityType: "PropertyOwnership",
+      entityId: ownership.id,
+      action: AuditAction.CREATE,
+      metadata: { subjectUserId: userId, propertyId },
+    });
   });
 }
+
+// `updateRentalStage()` was removed here in the 0008 migration. Rental
+// progress is no longer a single scalar on this row — see
+// src/lib/data/rentalStages.ts for the per-stage replacement.

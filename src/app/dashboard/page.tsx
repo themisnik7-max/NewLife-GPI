@@ -8,6 +8,7 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { getTenantClients } from "@/lib/data/clients";
 import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
+import { getClientRentalStages } from "@/lib/data/rentalStages";
 import { getPropertyMilestones } from "@/lib/data/construction";
 import { getUserVisaSteps } from "@/lib/data/visa";
 import { getUserLedger } from "@/lib/data/ledgers";
@@ -80,17 +81,18 @@ async function AdminClientList({ tenantId }: { tenantId: string }) {
 }
 
 async function OwnOverview({ tenantId, userId }: { tenantId: string; userId: string }) {
-  const { property, rentalStage } = await getClientPropertySnapshot(tenantId, userId);
-  const [milestones, visaSteps, ledgerEntries] = await Promise.all([
+  const { property } = await getClientPropertySnapshot(tenantId, userId);
+  const [milestones, visaSteps, ledgerEntries, rentalStages] = await Promise.all([
     property ? getPropertyMilestones(tenantId, property.id) : Promise.resolve([]),
     getUserVisaSteps(tenantId, userId),
     getUserLedger(tenantId, userId),
+    getClientRentalStages(tenantId, userId),
   ]);
 
   return (
     <ClientOverviewSummary
       property={property}
-      rentalStage={rentalStage}
+      rentalStages={rentalStages}
       milestones={milestones}
       visaSteps={visaSteps}
       ledgerEntries={ledgerEntries}

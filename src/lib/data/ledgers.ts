@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
 import type { PaymentLedger } from "@/generated/prisma/client";
 
 /**
@@ -124,12 +125,13 @@ export async function getUserLedger(tenantId: string, userId: string): Promise<L
  * in another tenant.
  */
 export async function createLedgerEntry(
-  tenantId: string,
+  actor: ActorContext,
   propertyId: string,
   userId: string,
   amount: number,
   dueDate: string,
 ): Promise<LedgerEntry> {
+  const tenantId = actor.tenantId;
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("amount must be a positive, finite number.");
   }
@@ -149,15 +151,28 @@ export async function createLedgerEntry(
     throw new Error(`User ${userId} was not found for tenant ${tenantId}.`);
   }
 
-  const created = await prisma.paymentLedger.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const ledger = await tx.paymentLedger.create({
+      data: {
+        tenantId,
+        propertyId,
+        userId,
+        amount,
+        dueDate: new Date(dueDate),
+        status: PaymentStatus.PENDING,
+      },
+    });
+
+    await recordAuditEvent(tx, {
       tenantId,
-      propertyId,
-      userId,
-      amount,
-      dueDate: new Date(dueDate),
-      status: PaymentStatus.PENDING,
-    },
+      actorUserId: actor.actorUserId,
+      entityType: "PaymentLedger",
+      entityId: ledger.id,
+      action: AuditAction.CREATE,
+      metadata: { subjectUserId: userId, propertyId, amount, dueDate },
+    });
+
+    return ledger;
   });
 
   return toLedgerEntry(created, new Date());
@@ -194,10 +209,11 @@ export async function createLedgerEntry(
  * into without inventing an event nothing else asked for.
  */
 export async function recordTenantPayment(
-  tenantId: string,
+  actor: ActorContext,
   ledgerId: string,
   amountPaid: number,
 ): Promise<LedgerEntry> {
+  const tenantId = actor.tenantId;
   if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
     throw new Error("amountPaid must be a positive, finite number.");
   }
@@ -240,6 +256,20 @@ export async function recordTenantPayment(
           : `Payment of ${currencyFormatter.format(amountPaid)} recorded.`,
       },
     });
+
+    // Joins the existing transaction rather than opening a second one, so
+    // payment + notification + audit remain a single atomic unit.
+    await recordFieldChanges(
+      tx,
+      {
+        tenantId,
+        actorUserId: actor.actorUserId,
+        entityType: "PaymentLedger",
+        entityId: ledgerId,
+      },
+      { amountPaid: ledger.amountPaid, status: ledger.status },
+      { amountPaid: newAmountPaid, status: updated.status },
+    );
 
     return toLedgerEntry(updated, new Date());
   });

@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { buildMapUrl, buildPlaceholderImageUrl, type Project, type PropertyStatus } from "@/lib/projects";
+import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
 import type { Property } from "@/generated/prisma/client";
 
 /**
@@ -159,27 +160,43 @@ function validatePropertyInput(input: PropertyInput): void {
  * there is no image upload mechanism in this app yet to make a real photo
  * possible, and a Maps link is fully derivable from the address already.
  */
-export async function createProperty(tenantId: string, input: PropertyInput): Promise<Project> {
+export async function createProperty(actor: ActorContext, input: PropertyInput): Promise<Project> {
   validatePropertyInput(input);
 
-  const created = await prisma.property.create({
-    data: {
-      tenantId,
-      name: input.name,
-      address: input.address,
-      area: input.area,
-      totalUnits: input.totalUnits,
-      availableUnits: input.availableUnits,
-      deliveryDate: new Date(input.deliveryDate),
-      contractDate: new Date(input.contractDate),
-      floor: input.floor,
-      sqm: input.sqm,
-      energyClass: input.energyClass,
-      imageUrl: input.imageUrl || buildPlaceholderImageUrl(input.name),
-      status: input.status ?? "PLANNING",
-      mapUrl: input.mapUrl || buildMapUrl(input.address),
-      pptUrl: input.pptUrl ?? null,
-    },
+  // The create and its audit row share one transaction so they commit or
+  // roll back together — a property that exists with no record of who
+  // created it is exactly the gap the audit trail exists to close.
+  const created = await prisma.$transaction(async (tx) => {
+    const property = await tx.property.create({
+      data: {
+        tenantId: actor.tenantId,
+        name: input.name,
+        address: input.address,
+        area: input.area,
+        totalUnits: input.totalUnits,
+        availableUnits: input.availableUnits,
+        deliveryDate: new Date(input.deliveryDate),
+        contractDate: new Date(input.contractDate),
+        floor: input.floor,
+        sqm: input.sqm,
+        energyClass: input.energyClass,
+        imageUrl: input.imageUrl || buildPlaceholderImageUrl(input.name),
+        status: input.status ?? "PLANNING",
+        mapUrl: input.mapUrl || buildMapUrl(input.address),
+        pptUrl: input.pptUrl ?? null,
+      },
+    });
+
+    await recordAuditEvent(tx, {
+      tenantId: actor.tenantId,
+      actorUserId: actor.actorUserId,
+      entityType: "Property",
+      entityId: property.id,
+      action: AuditAction.CREATE,
+      metadata: { name: property.name, address: property.address, status: property.status },
+    });
+
+    return property;
   });
 
   return toProject(created);
@@ -200,10 +217,11 @@ export async function createProperty(tenantId: string, input: PropertyInput): Pr
  * tenantId slip through unfiltered on the write itself.
  */
 export async function updateProperty(
-  tenantId: string,
+  actor: ActorContext,
   propertyId: string,
   input: Partial<PropertyInput>,
 ): Promise<Project> {
+  const tenantId = actor.tenantId;
   const existing = await prisma.property.findFirst({ where: { id: propertyId, tenantId } });
   if (!existing) {
     throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
@@ -268,12 +286,30 @@ export async function updateProperty(
   if (input.mapUrl !== undefined) data.mapUrl = input.mapUrl;
   if (input.pptUrl !== undefined) data.pptUrl = input.pptUrl;
 
-  await prisma.property.updateMany({
-    where: { id: propertyId, tenantId },
-    data,
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.property.updateMany({
+      where: { id: propertyId, tenantId },
+      data,
+    });
+
+    // One audit row per field that genuinely changed — recordFieldChanges
+    // skips no-op writes so the trail stays free of "set X to the value it
+    // already had", which would otherwise distort any later timing analysis.
+    await recordFieldChanges(
+      tx,
+      {
+        tenantId,
+        actorUserId: actor.actorUserId,
+        entityType: "Property",
+        entityId: propertyId,
+      },
+      existing as unknown as Record<string, unknown>,
+      data,
+    );
+
+    return tx.property.findFirst({ where: { id: propertyId, tenantId } });
   });
 
-  const updated = await prisma.property.findFirst({ where: { id: propertyId, tenantId } });
   if (!updated) {
     throw new Error(`Property ${propertyId} was not found for tenant ${tenantId} after update.`);
   }

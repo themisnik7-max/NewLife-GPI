@@ -1,6 +1,7 @@
 import "server-only";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
+import { AuditAction, recordAuditEvent, recordFieldChanges } from "@/lib/data/audit";
 import type { ApiKeyCardData, ApiKeyProvider, ApiKeyStatus } from "@/components/ui/ApiKeyCard";
 
 /**
@@ -196,16 +197,32 @@ export async function createTenantApiKey(
   const { encryptedKey, encryptionIv } = encryptKeyMaterial(rawKeyMaterial);
   const maskedKey = buildMaskedKey(rawKeyMaterial);
 
-  const created = await prisma.encryptedApiKey.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const apiKey = await tx.encryptedApiKey.create({
+      data: {
+        tenantId,
+        provider,
+        label,
+        maskedKey,
+        encryptedKey,
+        encryptionIv,
+        status: PrismaApiKeyStatus.ACTIVE,
+      },
+    });
+
+    // Records provider/label/maskedKey only — never the raw key material or
+    // its ciphertext. An audit trail that leaks the secret it is auditing
+    // would be worse than no audit trail.
+    await recordAuditEvent(tx, {
       tenantId,
-      provider,
-      label,
-      maskedKey,
-      encryptedKey,
-      encryptionIv,
-      status: PrismaApiKeyStatus.ACTIVE,
-    },
+      actorUserId: userId,
+      entityType: "EncryptedApiKey",
+      entityId: apiKey.id,
+      action: AuditAction.CREATE,
+      metadata: { provider, label, maskedKey },
+    });
+
+    return apiKey;
   });
 
   return toApiKeyCardData(created);
@@ -226,14 +243,32 @@ export async function createTenantApiKey(
 export async function revokeTenantApiKey(tenantId: string, userId: string, apiKeyId: string): Promise<void> {
   console.info(`Revoking API key ${apiKeyId} for tenant ${tenantId} (requested by user ${userId})`);
 
-  const result = await prisma.encryptedApiKey.updateMany({
-    where: { id: apiKeyId, tenantId },
-    data: { status: PrismaApiKeyStatus.REVOKED },
-  });
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.encryptedApiKey.findFirst({
+      where: { id: apiKeyId, tenantId },
+      select: { status: true },
+    });
+    if (!existing) {
+      throw new Error(`API key ${apiKeyId} was not found for tenant ${tenantId}.`);
+    }
 
-  if (result.count === 0) {
-    throw new Error(`API key ${apiKeyId} was not found for tenant ${tenantId}.`);
-  }
+    await tx.encryptedApiKey.updateMany({
+      where: { id: apiKeyId, tenantId },
+      data: { status: PrismaApiKeyStatus.REVOKED },
+    });
+
+    await recordFieldChanges(
+      tx,
+      {
+        tenantId,
+        actorUserId: userId,
+        entityType: "EncryptedApiKey",
+        entityId: apiKeyId,
+      },
+      { status: existing.status },
+      { status: PrismaApiKeyStatus.REVOKED },
+    );
+  });
 }
 
 /**

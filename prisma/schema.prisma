@@ -62,6 +62,8 @@ model Tenant {
   constructionMilestones ConstructionMilestone[]
   visaSteps              VisaStep[]
   notifications          Notification[]
+  auditLogs              AuditLog[]
+  rentalStageRecords     RentalStageRecord[]
 
   @@map("tenants")
 }
@@ -127,6 +129,7 @@ model User {
   paymentLedgers     PaymentLedger[]
   visaSteps          VisaStep[]
   notifications      Notification[]
+  rentalStageRecords RentalStageRecord[]
 
   @@index([tenantId])
   @@map("users")
@@ -175,18 +178,17 @@ model Property {
 /// to belong to a specific user's specific property, not a bare scalar) and
 /// consistent with PaymentLedger already pairing userId + propertyId.
 model PropertyOwnership {
-  id          String      @id @default(uuid()) @db.Uuid
-  tenantId    String      @map("tenant_id") @db.Uuid
-  userId      String      @map("user_id")
-  propertyId  String      @map("property_id") @db.Uuid
-  /// String, not a Prisma `enum RentalStage` — same root cause and fix as
-  /// User.role. rental_stage is `text + check`, never a native Postgres
-  /// enum. Latent until admin rental-stage updates (src/lib/data/
-  /// propertyOwnership.ts's updateRentalStage) became the first Prisma
-  /// write to this column.
-  rentalStage String      @default("RESERVATION") @map("rental_stage")
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id")
+  propertyId String   @map("property_id") @db.Uuid
+  /// `rentalStage` was removed here in migration 0008. It was a single
+  /// scalar holding one of ten PURCHASE-workflow values
+  /// (RESERVATION…RENTAL_ACTIVE); the business process it now has to model
+  /// is a LETTING workflow with per-stage status, attachments and offer
+  /// details, which a scalar cannot express. See RentalStageRecord.
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
   user     User     @relation(fields: [userId], references: [id])
@@ -395,4 +397,128 @@ model AiLog {
 
   @@index([tenantId])
   @@map("ai_logs")
+}
+
+/// Append-only record of every mutation an admin makes, so the history of a
+/// change is not destroyed by the change itself. Before this existed, every
+/// admin edit overwrote in place: `updatedAt` said *when* a row last changed
+/// but never *what* changed, *from what*, or *by whom* — which made the
+/// question the business actually wants answered ("how long does a stage
+/// take?", "who marked this done?") permanently unanswerable, and
+/// unbackfillable after the fact.
+///
+/// Shape follows AiLog (append-only: `createdAt` only, no `updatedAt`; a
+/// `Json?` metadata escape hatch) but deliberately NOT its `status` field —
+/// `AiLogStatus` is this schema's one real Prisma `enum` and is the exact
+/// bug class documented at length on User.role. Everything here is String.
+///
+/// Deliberately generic (entityType + entityId as plain strings rather than
+/// a real FK per table): a typed relation would need one nullable FK column
+/// per audited table, and every new audited table would then require a
+/// migration. The tradeoff is that entityId is not referentially enforced —
+/// accepted, because an audit row must survive its subject being deleted,
+/// which a real FK with cascade would actively prevent.
+model AuditLog {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The Clerk user id of whoever performed the action, always resolved
+  /// server-side from the session — never accepted as a parameter, same
+  /// rule as tenantId (see ARCHITECTURE.md).
+  actorUserId String @map("actor_user_id")
+
+  /// e.g. "Property", "RentalStageRecord", "PaymentLedger" — the model name.
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+
+  /// CREATE | UPDATE | DELETE. String + check, per this schema's convention.
+  action String
+
+  /// Which field changed, and its before/after values, for UPDATE actions.
+  /// All nullable: a CREATE has no single field or prior value. Values are
+  /// stringified rather than typed — this table spans every model, so there
+  /// is no one column type that fits, and analysis queries cast as needed.
+  field    String?
+  oldValue String? @map("old_value")
+  newValue String? @map("new_value")
+
+  /// Room for context that isn't a single field change (e.g. the full
+  /// payload of a CREATE), without a migration per shape.
+  metadata Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// One row per rental workflow stage a client has actually reached.
+///
+/// Replaces the former single `PropertyOwnership.rentalStage` scalar, which
+/// could only express "the client is at stage N, so everything before it is
+/// implicitly done" — a linear model that cannot represent stages completed
+/// out of order, cannot attach a document to a stage, and cannot carry the
+/// structured Offer fields (price/duration/comments) the real workflow needs.
+/// Modelled on VisaStep, the closest existing per-user progress table.
+///
+/// NO ROW MEANS PENDING. The canonical ten stages live in code
+/// (src/lib/data/rentalStages.ts), not in this table; a row is written only
+/// once a stage is actually touched. That keeps ten rows per client of pure
+/// "nothing has happened yet" out of the table, avoids any backfill, and
+/// means revising the stage list later cannot strand orphaned rows. Every
+/// real transition is timestamped in AuditLog regardless.
+model RentalStageRecord {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id")
+
+  /// Matches a key in the canonical list in src/lib/data/rentalStages.ts.
+  /// Intentionally NOT constrained by a database check: the stage list is
+  /// expected to change as the business process does, and a check constraint
+  /// would turn each revision into a migration. Validated in application
+  /// code against the canonical list instead, on both read and write.
+  stageKey String @map("stage_key")
+
+  /// Denormalised display order, copied from the canonical list at write
+  /// time so ordering queries don't need the application list. The list
+  /// remains the source of truth if the two ever disagree.
+  stageOrder Int @map("stage_order")
+
+  /// PENDING | DONE. Two states, not the three MilestoneStatus uses — the
+  /// requested workflow is explicitly binary per stage.
+  status String @default("PENDING")
+
+  completedAt DateTime? @map("completed_at")
+
+  /// Supabase Storage object path (private bucket) and the original
+  /// filename for display. Both null unless this stage has a file slot and
+  /// something was uploaded. The path is not a URL: downloads are served
+  /// through short-lived signed URLs generated server-side, so a leaked
+  /// path is not a leaked file.
+  attachmentPath     String? @map("attachment_path")
+  attachmentFilename String? @map("attachment_filename")
+
+  /// Structured Offer fields — used only by the OFFER stage. Nullable
+  /// columns on this shared table rather than a separate one-row table:
+  /// exactly one stage uses them, and a dedicated table for three fields
+  /// would add a join and a model for no real gain. Duration is an integer
+  /// month count rather than free text specifically so it stays analysable.
+  offerPrice          Decimal? @map("offer_price") @db.Decimal(12, 2)
+  offerDurationMonths Int?     @map("offer_duration_months")
+  offerComments       String?  @map("offer_comments")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([userId, stageKey])
+  @@index([tenantId])
+  @@index([userId])
+  @@map("rental_stage_records")
 }

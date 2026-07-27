@@ -17,6 +17,9 @@ vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    auditLog: {
+      create: vi.fn(),
+    },
     encryptedApiKey: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -67,6 +70,8 @@ const TEST_ENCRYPTION_SECRET = Buffer.from("a".repeat(32)).toString("base64");
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
 const USER_1 = "user_abc123";
+const ACTOR_A = { tenantId: TENANT_A, actorUserId: "user_admin" };
+const ACTOR_B = { tenantId: TENANT_B, actorUserId: "user_admin" };
 
 // Isolation lifecycle note (per this task's own testing contract): every
 // mock above is either a fresh vi.fn() reset via .mockReset() in beforeEach,
@@ -89,7 +94,12 @@ beforeEach(() => {
   mockedCreateLedger.mockReset();
   mockedPropertyFindFirst.mockReset();
   mockedUserFindFirst.mockReset();
-  mockedTransaction.mockReset();
+  // TX_PASSTHROUGH: audited mutations run inside prisma.$transaction;
+  // handing the callback the same mock object keeps each model assertion
+  // below valid. Individual tests still override this where they assert
+  // transaction-specific behaviour (e.g. rollback).
+  mockedTransaction.mockReset().mockImplementation(((cb: (tx: unknown) => unknown) => cb(prisma)) as never);
+  vi.mocked(prisma.auditLog.create).mockReset().mockResolvedValue({} as never);
   // apiKeys.ts logs each operation for attribution (see its own comments on
   // why userId is logged rather than filtered on) — suppressed here to keep
   // test output clean, restored individually below rather than via
@@ -283,6 +293,7 @@ describe("apiKeys.ts", () => {
 
   describe("revokeTenantApiKey", () => {
     it("scopes the update to both id and tenantId together", async () => {
+      mockedFindFirstKey.mockResolvedValueOnce({ status: "ACTIVE" } as never);
       mockedUpdateManyKeys.mockResolvedValueOnce({ count: 1 });
 
       await revokeTenantApiKey(TENANT_A, USER_1, "key-1");
@@ -314,6 +325,7 @@ describe("apiKeys.ts", () => {
     });
 
     it("succeeds silently (resolves with no value) when exactly one row matches", async () => {
+      mockedFindFirstKey.mockResolvedValueOnce({ status: "ACTIVE" } as never);
       mockedUpdateManyKeys.mockResolvedValueOnce({ count: 1 });
 
       await expect(revokeTenantApiKey(TENANT_A, USER_1, "key-1")).resolves.toBeUndefined();
@@ -573,18 +585,22 @@ describe("ledgers.ts", () => {
         ...args.data,
       }));
       const txNotificationCreate = vi.fn().mockResolvedValue({});
+      // recordTenantPayment now also writes an audit row inside this same
+      // transaction, so the fake tx must expose auditLog too.
+      const txAuditCreate = vi.fn().mockResolvedValue({});
       mockedTransaction.mockImplementation(((callback: (tx: unknown) => Promise<unknown>) =>
         callback({
           paymentLedger: { findFirst: txFindFirst, update: txUpdate },
           notification: { create: txNotificationCreate },
+          auditLog: { create: txAuditCreate },
         })) as never);
-      return { txFindFirst, txUpdate, txNotificationCreate };
+      return { txFindFirst, txUpdate, txNotificationCreate, txAuditCreate };
     }
 
     it("looks up the ledger row scoped to both id and tenantId together", async () => {
       const { txFindFirst } = mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 0 }));
 
-      await recordTenantPayment(TENANT_A, "ledger-1", 1000);
+      await recordTenantPayment(ACTOR_A, "ledger-1", 1000);
 
       expect(txFindFirst).toHaveBeenCalledWith({ where: { id: "ledger-1", tenantId: TENANT_A } });
     });
@@ -597,14 +613,14 @@ describe("ledgers.ts", () => {
       // real filter itself.
       const { txUpdate } = mockTransactionAgainst(null);
 
-      await expect(recordTenantPayment(TENANT_B, "ledger-1", 500)).rejects.toThrow(/was not found for tenant/);
+      await expect(recordTenantPayment(ACTOR_B, "ledger-1", 500)).rejects.toThrow(/was not found for tenant/);
       expect(txUpdate).not.toHaveBeenCalled();
     });
 
     it("marks the installment PAID when the payment exactly satisfies the outstanding balance", async () => {
       mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 0, status: "PENDING" }));
 
-      const result = await recordTenantPayment(TENANT_A, "ledger-1", 1000);
+      const result = await recordTenantPayment(ACTOR_A, "ledger-1", 1000);
 
       expect(result.status).toBe("PAID");
       expect(result.amountPaid).toBe(1000);
@@ -615,7 +631,7 @@ describe("ledgers.ts", () => {
         buildLedgerRow({ amount: 1000, amountPaid: 0, status: "PENDING" }),
       );
 
-      await recordTenantPayment(TENANT_A, "ledger-1", 400);
+      await recordTenantPayment(ACTOR_A, "ledger-1", 400);
 
       expect(txNotificationCreate).toHaveBeenCalledWith({
         data: { tenantId: TENANT_A, userId: USER_1, message: expect.stringContaining("€400.00") },
@@ -627,7 +643,7 @@ describe("ledgers.ts", () => {
         buildLedgerRow({ amount: 1000, amountPaid: 0, status: "PENDING" }),
       );
 
-      await recordTenantPayment(TENANT_A, "ledger-1", 1000);
+      await recordTenantPayment(ACTOR_A, "ledger-1", 1000);
 
       expect(txNotificationCreate).toHaveBeenCalledWith({
         data: expect.objectContaining({ message: expect.stringContaining("fully paid") }),
@@ -637,7 +653,7 @@ describe("ledgers.ts", () => {
     it("marks the installment PAID when a partial payment completes an already-partially-paid balance", async () => {
       mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 600, status: "PENDING" }));
 
-      const result = await recordTenantPayment(TENANT_A, "ledger-1", 400);
+      const result = await recordTenantPayment(ACTOR_A, "ledger-1", 400);
 
       expect(result.status).toBe("PAID");
       expect(result.amountPaid).toBe(1000);
@@ -646,7 +662,7 @@ describe("ledgers.ts", () => {
     it("keeps the installment in its existing status on a genuine partial payment", async () => {
       mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 0, status: "OVERDUE" }));
 
-      const result = await recordTenantPayment(TENANT_A, "ledger-1", 300);
+      const result = await recordTenantPayment(ACTOR_A, "ledger-1", 300);
 
       expect(result.status).toBe("OVERDUE");
       expect(result.amountPaid).toBe(300);
@@ -655,7 +671,7 @@ describe("ledgers.ts", () => {
     it("rejects a payment that would exceed the outstanding balance", async () => {
       const { txUpdate } = mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 800 }));
 
-      await expect(recordTenantPayment(TENANT_A, "ledger-1", 300)).rejects.toThrow(
+      await expect(recordTenantPayment(ACTOR_A, "ledger-1", 300)).rejects.toThrow(
         /exceeds the outstanding balance/,
       );
       expect(txUpdate).not.toHaveBeenCalled();
@@ -664,14 +680,14 @@ describe("ledgers.ts", () => {
     it("rejects any further payment against an already-fully-paid installment", async () => {
       const { txUpdate } = mockTransactionAgainst(buildLedgerRow({ amount: 1000, amountPaid: 1000, status: "PAID" }));
 
-      await expect(recordTenantPayment(TENANT_A, "ledger-1", 1)).rejects.toThrow(/already fully paid/);
+      await expect(recordTenantPayment(ACTOR_A, "ledger-1", 1)).rejects.toThrow(/already fully paid/);
       expect(txUpdate).not.toHaveBeenCalled();
     });
 
     it("rejects a zero, negative, or non-finite amountPaid before ever starting a transaction", async () => {
-      await expect(recordTenantPayment(TENANT_A, "ledger-1", 0)).rejects.toThrow(/positive, finite number/);
-      await expect(recordTenantPayment(TENANT_A, "ledger-1", -50)).rejects.toThrow(/positive, finite number/);
-      await expect(recordTenantPayment(TENANT_A, "ledger-1", Number.POSITIVE_INFINITY)).rejects.toThrow(
+      await expect(recordTenantPayment(ACTOR_A, "ledger-1", 0)).rejects.toThrow(/positive, finite number/);
+      await expect(recordTenantPayment(ACTOR_A, "ledger-1", -50)).rejects.toThrow(/positive, finite number/);
+      await expect(recordTenantPayment(ACTOR_A, "ledger-1", Number.POSITIVE_INFINITY)).rejects.toThrow(
         /positive, finite number/,
       );
       expect(mockedTransaction).not.toHaveBeenCalled();
@@ -705,7 +721,7 @@ describe("createLedgerEntry", () => {
     mockedUserFindFirst.mockResolvedValueOnce({ id: USER_1 } as never);
     mockedCreateLedger.mockResolvedValueOnce(buildCreatedRow() as never);
 
-    const result = await createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, 15000, "2026-09-01");
+    const result = await createLedgerEntry(ACTOR_A, PROPERTY_1, USER_1, 15000, "2026-09-01");
 
     expect(mockedCreateLedger).toHaveBeenCalledWith({
       data: {
@@ -725,7 +741,7 @@ describe("createLedgerEntry", () => {
     mockedPropertyFindFirst.mockResolvedValueOnce(null);
     mockedUserFindFirst.mockResolvedValueOnce({ id: USER_1 } as never);
 
-    await expect(createLedgerEntry(TENANT_B, PROPERTY_1, USER_1, 100, "2026-09-01")).rejects.toThrow(
+    await expect(createLedgerEntry(ACTOR_B, PROPERTY_1, USER_1, 100, "2026-09-01")).rejects.toThrow(
       /Property .* was not found for tenant/,
     );
     expect(mockedCreateLedger).not.toHaveBeenCalled();
@@ -735,7 +751,7 @@ describe("createLedgerEntry", () => {
     mockedPropertyFindFirst.mockResolvedValueOnce({ id: PROPERTY_1 } as never);
     mockedUserFindFirst.mockResolvedValueOnce(null);
 
-    await expect(createLedgerEntry(TENANT_A, PROPERTY_1, "user_other", 100, "2026-09-01")).rejects.toThrow(
+    await expect(createLedgerEntry(ACTOR_A, PROPERTY_1, "user_other", 100, "2026-09-01")).rejects.toThrow(
       /User .* was not found for tenant/,
     );
     expect(mockedCreateLedger).not.toHaveBeenCalled();
@@ -747,7 +763,7 @@ describe("createLedgerEntry", () => {
     ["a non-finite amount", Number.NaN, "2026-09-01", /amount must be a positive, finite number/],
     ["an invalid dueDate", 100, "not-a-date", /dueDate is not a valid date/],
   ])("rejects %s without touching the database at all", async (_label, amount, dueDate, expected) => {
-    await expect(createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, amount, dueDate)).rejects.toThrow(expected);
+    await expect(createLedgerEntry(ACTOR_A, PROPERTY_1, USER_1, amount, dueDate)).rejects.toThrow(expected);
     expect(mockedPropertyFindFirst).not.toHaveBeenCalled();
     expect(mockedCreateLedger).not.toHaveBeenCalled();
   });
@@ -761,7 +777,7 @@ describe("createLedgerEntry", () => {
       buildCreatedRow({ dueDate: new Date("2020-01-01T00:00:00.000Z") }) as never,
     );
 
-    const result = await createLedgerEntry(TENANT_A, PROPERTY_1, USER_1, 15000, "2020-01-01");
+    const result = await createLedgerEntry(ACTOR_A, PROPERTY_1, USER_1, 15000, "2020-01-01");
 
     expect(result.isDelayed).toBe(true);
   });

@@ -5,6 +5,40 @@ import { MOCK_OWNED_PROPERTY } from "@/lib/projects";
 import type { MilestoneEntry } from "@/lib/data/construction";
 import type { VisaStepEntry } from "@/lib/data/visa";
 import type { LedgerEntry } from "@/lib/data/ledgers";
+import type { RentalStageView } from "@/lib/rentalStages";
+
+// Two stages, one done — enough to prove the card counts rather than
+// labels, without duplicating the full ten-stage canonical list.
+const RENTAL_STAGE_FIXTURE: RentalStageView[] = [
+  {
+    key: "REPRESENTATION_MANDATE_SIGNED",
+    label: "Representation Mandate Signed",
+    order: 1,
+    slot: "pdf",
+    hasOfferFields: false,
+    status: "DONE",
+    completedAt: "2026-07-01T00:00:00.000Z",
+    attachmentFilename: null,
+    hasAttachment: false,
+    offerPrice: null,
+    offerDurationMonths: null,
+    offerComments: null,
+  },
+  {
+    key: "PROPERTY_INSPECTION",
+    label: "Property Inspection",
+    order: 2,
+    slot: "photo",
+    hasOfferFields: false,
+    status: "PENDING",
+    completedAt: null,
+    attachmentFilename: null,
+    hasAttachment: false,
+    offerPrice: null,
+    offerDurationMonths: null,
+    offerComments: null,
+  },
+];
 
 const MILESTONES: MilestoneEntry[] = [
   {
@@ -63,7 +97,7 @@ const LEDGER_ENTRIES: LedgerEntry[] = [
 describe("ClientOverviewSummary", () => {
   it("renders the owned property's name and address, linking to the property page", () => {
     render(
-      <ClientOverviewSummary property={MOCK_OWNED_PROPERTY} rentalStage={null} milestones={[]} visaSteps={[]} ledgerEntries={[]} />,
+      <ClientOverviewSummary property={MOCK_OWNED_PROPERTY} rentalStages={[]} milestones={[]} visaSteps={[]} ledgerEntries={[]} />,
     );
 
     expect(screen.getByText(MOCK_OWNED_PROPERTY.name)).toBeInTheDocument();
@@ -75,14 +109,14 @@ describe("ClientOverviewSummary", () => {
   });
 
   it("shows a no-property message and does not crash when property is null", () => {
-    render(<ClientOverviewSummary property={null} rentalStage={null} milestones={[]} visaSteps={[]} ledgerEntries={[]} />);
+    render(<ClientOverviewSummary property={null} rentalStages={[]} milestones={[]} visaSteps={[]} ledgerEntries={[]} />);
 
     expect(screen.getByText("No property assigned yet.")).toBeInTheDocument();
   });
 
   it("computes the real completed-milestone count rather than a fabricated percentage", () => {
     render(
-      <ClientOverviewSummary property={null} rentalStage={null} milestones={MILESTONES} visaSteps={[]} ledgerEntries={[]} />,
+      <ClientOverviewSummary property={null} rentalStages={[]} milestones={MILESTONES} visaSteps={[]} ledgerEntries={[]} />,
     );
 
     expect(screen.getByText("1 of 2 milestones complete")).toBeInTheDocument();
@@ -90,7 +124,7 @@ describe("ClientOverviewSummary", () => {
 
   it("computes the real completed-step count for the visa timeline", () => {
     render(
-      <ClientOverviewSummary property={null} rentalStage={null} milestones={[]} visaSteps={VISA_STEPS} ledgerEntries={[]} />,
+      <ClientOverviewSummary property={null} rentalStages={[]} milestones={[]} visaSteps={VISA_STEPS} ledgerEntries={[]} />,
     );
 
     expect(screen.getByText("1 of 2 steps complete")).toBeInTheDocument();
@@ -98,7 +132,7 @@ describe("ClientOverviewSummary", () => {
 
   it("computes the real outstanding balance and next due date from ledger entries", () => {
     render(
-      <ClientOverviewSummary property={null} rentalStage={null} milestones={[]} visaSteps={[]} ledgerEntries={LEDGER_ENTRIES} />,
+      <ClientOverviewSummary property={null} rentalStages={[]} milestones={[]} visaSteps={[]} ledgerEntries={LEDGER_ENTRIES} />,
     );
 
     expect(screen.getByText("€600.00 outstanding")).toBeInTheDocument();
@@ -107,16 +141,22 @@ describe("ClientOverviewSummary", () => {
     expect(screen.getByText("Next due 1 Sept 2026")).toBeInTheDocument();
   });
 
-  it("renders the human-readable label for a real rental stage", () => {
+  it("summarises rental progress as a completed count, matching its sibling cards", () => {
     render(
-      <ClientOverviewSummary property={null} rentalStage="VENDORS_ENGAGED" milestones={[]} visaSteps={[]} ledgerEntries={[]} />,
+      <ClientOverviewSummary
+        property={null}
+        rentalStages={RENTAL_STAGE_FIXTURE}
+        milestones={[]}
+        visaSteps={[]}
+        ledgerEntries={[]}
+      />,
     );
 
-    expect(screen.getByText("Vendors Engaged")).toBeInTheDocument();
+    expect(screen.getByText("1 of 2 stages complete")).toBeInTheDocument();
   });
 
   it("shows empty-state text for every card when there is no data at all", () => {
-    render(<ClientOverviewSummary property={null} rentalStage={null} milestones={[]} visaSteps={[]} ledgerEntries={[]} />);
+    render(<ClientOverviewSummary property={null} rentalStages={[]} milestones={[]} visaSteps={[]} ledgerEntries={[]} />);
 
     expect(screen.getByText("No milestones on record yet.")).toBeInTheDocument();
     expect(screen.getByText("No visa steps on record yet.")).toBeInTheDocument();

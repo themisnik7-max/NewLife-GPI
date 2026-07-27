@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
 import type { ConstructionMilestone } from "@/generated/prisma/client";
 
 /**
@@ -113,10 +114,11 @@ export interface MilestoneInput {
  * caller needs to see.
  */
 export async function createMilestone(
-  tenantId: string,
+  actor: ActorContext,
   propertyId: string,
   input: MilestoneInput,
 ): Promise<MilestoneEntry> {
+  const tenantId = actor.tenantId;
   if (!input.title?.trim()) {
     throw new Error("Milestone title must not be empty.");
   }
@@ -132,15 +134,28 @@ export async function createMilestone(
     throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
   }
 
-  const created = await prisma.constructionMilestone.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const milestone = await tx.constructionMilestone.create({
+      data: {
+        tenantId,
+        propertyId,
+        title: input.title,
+        description: input.description ?? null,
+        targetDate: new Date(input.targetDate),
+        status: input.status ?? MilestoneStatusValue.PENDING,
+      },
+    });
+
+    await recordAuditEvent(tx, {
       tenantId,
-      propertyId,
-      title: input.title,
-      description: input.description ?? null,
-      targetDate: new Date(input.targetDate),
-      status: input.status ?? MilestoneStatusValue.PENDING,
-    },
+      actorUserId: actor.actorUserId,
+      entityType: "ConstructionMilestone",
+      entityId: milestone.id,
+      action: AuditAction.CREATE,
+      metadata: { propertyId, title: milestone.title, status: milestone.status },
+    });
+
+    return milestone;
   });
 
   return toMilestoneEntry(created);
@@ -155,21 +170,43 @@ export async function createMilestone(
  * the same reasoning as revokeTenantApiKey() in ./apiKeys.ts.
  */
 export async function updateMilestoneStatus(
-  tenantId: string,
+  actor: ActorContext,
   milestoneId: string,
   status: MilestoneEntry["status"],
 ): Promise<void> {
+  const tenantId = actor.tenantId;
   toMilestoneStatus(status);
 
-  const result = await prisma.constructionMilestone.updateMany({
-    where: { id: milestoneId, tenantId },
-    data: {
-      status,
-      completionDate: status === MilestoneStatusValue.COMPLETED ? new Date() : null,
-    },
-  });
+  // The prior status is read inside the transaction so the audit row records
+  // the value this update actually replaced, not one a concurrent write
+  // could have changed in between.
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.constructionMilestone.findFirst({
+      where: { id: milestoneId, tenantId },
+      select: { status: true },
+    });
+    if (!existing) {
+      throw new Error(`Milestone ${milestoneId} was not found for tenant ${tenantId}.`);
+    }
 
-  if (result.count === 0) {
-    throw new Error(`Milestone ${milestoneId} was not found for tenant ${tenantId}.`);
-  }
+    await tx.constructionMilestone.updateMany({
+      where: { id: milestoneId, tenantId },
+      data: {
+        status,
+        completionDate: status === MilestoneStatusValue.COMPLETED ? new Date() : null,
+      },
+    });
+
+    await recordFieldChanges(
+      tx,
+      {
+        tenantId,
+        actorUserId: actor.actorUserId,
+        entityType: "ConstructionMilestone",
+        entityId: milestoneId,
+      },
+      { status: existing.status },
+      { status },
+    );
+  });
 }

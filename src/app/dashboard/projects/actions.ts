@@ -10,6 +10,7 @@ import {
   type MilestoneInput,
 } from "@/lib/data/construction";
 import { Role } from "@/lib/auth/role";
+import type { ActorContext } from "@/lib/data/audit";
 
 /**
  * Every action in this file independently re-checks admin role server-side —
@@ -27,6 +28,15 @@ async function requireAdmin() {
 }
 
 /**
+ * The audit trail's actor, built from the signed-in session only — the
+ * client never supplies either field, so an audit row cannot be attributed
+ * to someone else by a crafted request.
+ */
+function actorFrom(currentUser: { tenantId: string; userId: string }): ActorContext {
+  return { tenantId: currentUser.tenantId, actorUserId: currentUser.userId };
+}
+
+/**
  * Returns the new property's id rather than calling redirect() itself:
  * PropertyForm (src/components/ui/PropertyForm.tsx) wraps this call in a
  * try/catch to surface validation errors inline, and redirect() works by
@@ -36,14 +46,14 @@ async function requireAdmin() {
  */
 export async function createPropertyAction(input: PropertyInput): Promise<{ id: string }> {
   const currentUser = await requireAdmin();
-  const created = await createProperty(currentUser.tenantId, input);
+  const created = await createProperty(actorFrom(currentUser), input);
   revalidatePath("/dashboard/projects");
   return { id: created.id };
 }
 
 export async function updatePropertyAction(propertyId: string, input: Partial<PropertyInput>): Promise<void> {
   const currentUser = await requireAdmin();
-  await updateProperty(currentUser.tenantId, propertyId, input);
+  await updateProperty(actorFrom(currentUser), propertyId, input);
   revalidatePath(`/dashboard/projects/${propertyId}`);
   revalidatePath("/dashboard/projects");
 }
@@ -57,7 +67,7 @@ export async function updatePropertyAction(propertyId: string, input: Partial<Pr
  */
 export async function createMilestoneAction(propertyId: string, input: MilestoneInput): Promise<void> {
   const currentUser = await requireAdmin();
-  await createMilestone(currentUser.tenantId, propertyId, input);
+  await createMilestone(actorFrom(currentUser), propertyId, input);
   revalidatePath(`/dashboard/projects/${propertyId}`);
   revalidatePath("/dashboard/construction");
 }
@@ -68,7 +78,7 @@ export async function updateMilestoneStatusAction(
   status: MilestoneEntry["status"],
 ): Promise<void> {
   const currentUser = await requireAdmin();
-  await updateMilestoneStatus(currentUser.tenantId, milestoneId, status);
+  await updateMilestoneStatus(actorFrom(currentUser), milestoneId, status);
   revalidatePath(`/dashboard/projects/${propertyId}`);
   revalidatePath("/dashboard/construction");
 }

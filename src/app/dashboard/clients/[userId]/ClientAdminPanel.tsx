@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { RENTAL_STAGES, type RentalStage } from "@/components/ui/RentalRoadmap";
 import type { VisaStepEntry } from "@/lib/data/visa";
 import type { Project } from "@/lib/projects";
+import { SLOT_CONTENT_TYPES, type RentalStageView } from "@/lib/rentalStages";
 import {
   AdminError,
   AdminField,
@@ -17,8 +17,11 @@ import {
   assignPropertyAction,
   createLedgerEntryAction,
   createVisaStepAction,
-  updateRentalStageAction,
+  getRentalStageFileUrlAction,
+  setOfferDetailsAction,
+  setRentalStageStatusAction,
   updateVisaStepStatusAction,
+  uploadRentalStageFileAction,
 } from "./actions";
 
 const MILESTONE_STATUSES: Array<{ value: VisaStepEntry["status"]; label: string }> = [
@@ -33,8 +36,11 @@ export interface ClientAdminPanelProps {
   availableProperties: Project[];
   /** The client's currently assigned property, if any. */
   assignedProperty: Project | null;
-  currentRentalStage: RentalStage | null;
+  rentalStages: RentalStageView[];
   visaSteps: VisaStepEntry[];
+  /** False when SUPABASE_SECRET_KEY is unset — upload controls then explain
+   * themselves instead of failing on click. */
+  storageConfigured: boolean;
 }
 
 /**
@@ -51,20 +57,35 @@ export function ClientAdminPanel({
   userId,
   availableProperties,
   assignedProperty,
-  currentRentalStage,
+  rentalStages,
   visaSteps,
+  storageConfigured,
 }: ClientAdminPanelProps) {
   const router = useRouter();
   const { error, isPending, run } = useAdminAction();
 
   const [propertyId, setPropertyId] = useState(availableProperties[0]?.id ?? "");
-  const [stage, setStage] = useState<RentalStage>(currentRentalStage ?? "RESERVATION");
   const [visaTitle, setVisaTitle] = useState("");
   const [visaDescription, setVisaDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState("");
 
+  const offerStage = rentalStages.find((stage) => stage.hasOfferFields);
+  const [offerPrice, setOfferPrice] = useState(offerStage?.offerPrice?.toString() ?? "");
+  const [offerDuration, setOfferDuration] = useState(offerStage?.offerDurationMonths?.toString() ?? "");
+  const [offerComments, setOfferComments] = useState(offerStage?.offerComments ?? "");
+
   const refresh = () => router.refresh();
+
+  // Opens the file in a new tab via a freshly-minted, short-lived signed URL
+  // rather than storing a link — the bucket is private, so there is no
+  // durable URL to render.
+  function openAttachment(stageKey: string) {
+    run(async () => {
+      const url = await getRentalStageFileUrlAction(userId, stageKey);
+      window.open(url, "_blank", "noopener,noreferrer");
+    });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -117,36 +138,131 @@ export function ClientAdminPanel({
         )}
       </AdminSection>
 
-      <AdminSection title="Rental stage">
-        {assignedProperty ? (
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[240px] flex-1">
-              <AdminField label="Current stage">
+      <AdminSection title="Rental workflow">
+        <ul className="flex flex-col gap-3">
+          {rentalStages.map((stage) => (
+            <li key={stage.key} className="flex flex-col gap-2 border-b border-stone-100 pb-3 last:border-0">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm text-stone-900">
+                  {stage.order}. {stage.label}
+                </span>
                 <select
-                  className={ADMIN_FIELD_CLASS}
-                  value={stage}
-                  onChange={(e) => setStage(e.target.value as RentalStage)}
+                  aria-label={`Status for ${stage.label}`}
+                  className="rounded-md border border-stone-300 bg-stone-0 px-2 py-1 text-xs text-stone-900"
+                  value={stage.status}
+                  disabled={isPending}
+                  onChange={(e) =>
+                    run(
+                      () => setRentalStageStatusAction(userId, stage.key, e.target.value as "PENDING" | "DONE"),
+                      refresh,
+                    )
+                  }
                 >
-                  {RENTAL_STAGES.map(({ stage: value, label }) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
+                  <option value="PENDING">Pending</option>
+                  <option value="DONE">Done</option>
                 </select>
-              </AdminField>
-            </div>
-            <button
-              type="button"
-              disabled={isPending}
-              onClick={() => run(() => updateRentalStageAction(userId, stage), refresh)}
-              className={ADMIN_BUTTON_CLASS}
-            >
-              Update stage
-            </button>
-          </div>
-        ) : (
-          <p className="text-sm text-stone-500">Assign a property first — rental stage is tracked per property.</p>
-        )}
+              </div>
+
+              {stage.slot !== "none" && (
+                <div className="flex flex-wrap items-center gap-3 pl-4">
+                  {stage.hasAttachment && (
+                    <button
+                      type="button"
+                      disabled={isPending || !storageConfigured}
+                      onClick={() => openAttachment(stage.key)}
+                      className="text-xs font-semibold text-aegean-600 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {stage.attachmentFilename}
+                    </button>
+                  )}
+                  {storageConfigured ? (
+                    <label className="text-xs text-stone-600">
+                      <span className="sr-only">
+                        {stage.hasAttachment ? "Replace file" : "Upload file"} for {stage.label}
+                      </span>
+                      <input
+                        type="file"
+                        accept={SLOT_CONTENT_TYPES[stage.slot].join(",")}
+                        disabled={isPending}
+                        className="text-xs file:mr-2 file:rounded-md file:border file:border-stone-300 file:bg-stone-0 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-stone-700"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const formData = new FormData();
+                          formData.append("userId", userId);
+                          formData.append("stageKey", stage.key);
+                          formData.append("file", file);
+                          e.target.value = "";
+                          run(() => uploadRentalStageFileAction(formData), refresh);
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <span className="text-xs text-stone-500">
+                      File storage is not configured — set SUPABASE_URL and SUPABASE_SECRET_KEY to enable uploads.
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {stage.hasOfferFields && (
+                <div className="flex flex-wrap items-end gap-3 pl-4">
+                  <div className="min-w-[120px]">
+                    <AdminField label="Offer price (EUR)">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        className={ADMIN_FIELD_CLASS}
+                        value={offerPrice}
+                        onChange={(e) => setOfferPrice(e.target.value)}
+                      />
+                    </AdminField>
+                  </div>
+                  <div className="min-w-[120px]">
+                    <AdminField label="Duration (months)">
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        className={ADMIN_FIELD_CLASS}
+                        value={offerDuration}
+                        onChange={(e) => setOfferDuration(e.target.value)}
+                      />
+                    </AdminField>
+                  </div>
+                  <div className="min-w-[180px] flex-1">
+                    <AdminField label="Comments">
+                      <input
+                        className={ADMIN_FIELD_CLASS}
+                        value={offerComments}
+                        onChange={(e) => setOfferComments(e.target.value)}
+                      />
+                    </AdminField>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() =>
+                      run(
+                        () =>
+                          setOfferDetailsAction(userId, {
+                            price: offerPrice ? Number(offerPrice) : null,
+                            durationMonths: offerDuration ? Number(offerDuration) : null,
+                            comments: offerComments || null,
+                          }),
+                        refresh,
+                      )
+                    }
+                    className={ADMIN_BUTTON_CLASS}
+                  >
+                    Save offer
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
       </AdminSection>
 
       <AdminSection title="Golden Visa steps">

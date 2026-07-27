@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { ClientAdminPanel } from "./ClientAdminPanel";
 import { MOCK_PROJECTS } from "@/lib/projects";
 import type { VisaStepEntry } from "@/lib/data/visa";
+import type { RentalStageView } from "@/lib/rentalStages";
 
 const mockRefresh = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -12,7 +13,10 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("./actions", () => ({
   assignPropertyAction: vi.fn(),
-  updateRentalStageAction: vi.fn(),
+  setRentalStageStatusAction: vi.fn(),
+  setOfferDetailsAction: vi.fn(),
+  uploadRentalStageFileAction: vi.fn(),
+  getRentalStageFileUrlAction: vi.fn(),
   createVisaStepAction: vi.fn(),
   updateVisaStepStatusAction: vi.fn(),
   createLedgerEntryAction: vi.fn(),
@@ -22,12 +26,14 @@ import {
   assignPropertyAction,
   createLedgerEntryAction,
   createVisaStepAction,
-  updateRentalStageAction,
+  setRentalStageStatusAction,
+  setOfferDetailsAction,
   updateVisaStepStatusAction,
 } from "./actions";
 
 const mockedAssign = vi.mocked(assignPropertyAction);
-const mockedUpdateStage = vi.mocked(updateRentalStageAction);
+const mockedSetStageStatus = vi.mocked(setRentalStageStatusAction);
+const mockedSetOffer = vi.mocked(setOfferDetailsAction);
 const mockedCreateVisaStep = vi.mocked(createVisaStepAction);
 const mockedUpdateVisaStatus = vi.mocked(updateVisaStepStatusAction);
 const mockedCreateLedger = vi.mocked(createLedgerEntryAction);
@@ -40,10 +46,35 @@ const VISA_STEPS: VisaStepEntry[] = [
   { id: "step-1", stepOrder: 1, title: "Submit application", description: null, status: "PENDING", completedAt: null },
 ];
 
+function buildStage(overrides: Partial<RentalStageView> & Pick<RentalStageView, "key" | "label" | "order">): RentalStageView {
+  return {
+    slot: "none",
+    hasOfferFields: false,
+    status: "PENDING",
+    completedAt: null,
+    attachmentFilename: null,
+    hasAttachment: false,
+    offerPrice: null,
+    offerDurationMonths: null,
+    offerComments: null,
+    ...overrides,
+  };
+}
+
+// Three stages covering the shapes the panel must handle: a plain one, one
+// with a file slot, and the offer one — rather than the full canonical ten,
+// which would make each assertion harder to read without testing anything more.
+const RENTAL_STAGES_FIXTURE: RentalStageView[] = [
+  buildStage({ key: "KEYS_DELIVERED", label: "Keys Delivered", order: 3 }),
+  buildStage({ key: "ENERGY_CERTIFICATE", label: "Energy Certificate", order: 4, slot: "pdf" }),
+  buildStage({ key: "OFFER", label: "Offer", order: 8, hasOfferFields: true }),
+];
+
 beforeEach(() => {
   mockRefresh.mockReset();
   mockedAssign.mockReset().mockResolvedValue(undefined as never);
-  mockedUpdateStage.mockReset().mockResolvedValue(undefined as never);
+  mockedSetStageStatus.mockReset().mockResolvedValue(undefined as never);
+  mockedSetOffer.mockReset().mockResolvedValue(undefined as never);
   mockedCreateVisaStep.mockReset().mockResolvedValue(undefined as never);
   mockedUpdateVisaStatus.mockReset().mockResolvedValue(undefined as never);
   mockedCreateLedger.mockReset().mockResolvedValue(undefined as never);
@@ -55,7 +86,8 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof ClientAdminP
       userId={USER_ID}
       availableProperties={PROPERTIES}
       assignedProperty={ASSIGNED}
-      currentRentalStage="LEGAL_REVIEW"
+      rentalStages={RENTAL_STAGES_FIXTURE}
+      storageConfigured
       visaSteps={VISA_STEPS}
       {...overrides}
     />,
@@ -95,35 +127,88 @@ describe("ClientAdminPanel — property assignment", () => {
   });
 });
 
-describe("ClientAdminPanel — rental stage", () => {
-  it("pre-selects the client's current stage", () => {
+describe("ClientAdminPanel — rental workflow", () => {
+  it("lists every stage with its order, label, and current status", () => {
     renderPanel();
 
-    expect(screen.getByLabelText("Current stage")).toHaveValue("LEGAL_REVIEW");
+    expect(screen.getByText("3. Keys Delivered")).toBeInTheDocument();
+    expect(screen.getByLabelText("Status for Keys Delivered")).toHaveValue("PENDING");
   });
 
-  it("defaults to RESERVATION when the client has no stage recorded yet", () => {
-    renderPanel({ currentRentalStage: null });
-
-    expect(screen.getByLabelText("Current stage")).toHaveValue("RESERVATION");
-  });
-
-  it("updates the stage and refreshes", async () => {
+  it("marks a stage DONE and refreshes", async () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.selectOptions(screen.getByLabelText("Current stage"), "HANDOVER");
-    await user.click(screen.getByRole("button", { name: "Update stage" }));
+    await user.selectOptions(screen.getByLabelText("Status for Keys Delivered"), "DONE");
 
-    await waitFor(() => expect(mockedUpdateStage).toHaveBeenCalled());
-    expect(mockedUpdateStage).toHaveBeenCalledWith(USER_ID, "HANDOVER");
+    await waitFor(() => expect(mockedSetStageStatus).toHaveBeenCalled());
+    expect(mockedSetStageStatus).toHaveBeenCalledWith(USER_ID, "KEYS_DELIVERED", "DONE");
+    expect(mockRefresh).toHaveBeenCalled();
   });
 
-  it("gates the stage control behind having a property, since stage is tracked per property", () => {
-    renderPanel({ assignedProperty: null });
+  it("offers a file input only on stages that have a slot", () => {
+    const { container } = renderPanel();
 
-    expect(screen.getByText(/Assign a property first — rental stage is tracked per property/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Update stage" })).not.toBeInTheDocument();
+    // One slot in the fixture (ENERGY_CERTIFICATE), so exactly one input.
+    expect(container.querySelectorAll('input[type="file"]')).toHaveLength(1);
+  });
+
+  it("explains itself instead of offering uploads when storage is not configured", () => {
+    const { container } = renderPanel({ storageConfigured: false });
+
+    expect(screen.getByText(/File storage is not configured/)).toBeInTheDocument();
+    expect(container.querySelectorAll('input[type="file"]')).toHaveLength(0);
+  });
+
+  it("saves offer details with the duration parsed to a number, not a string", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(screen.getByLabelText("Offer price (EUR)"), "1500");
+    await user.type(screen.getByLabelText("Duration (months)"), "12");
+    await user.type(screen.getByLabelText("Comments"), "Includes parking");
+    await user.click(screen.getByRole("button", { name: "Save offer" }));
+
+    await waitFor(() => expect(mockedSetOffer).toHaveBeenCalled());
+    expect(mockedSetOffer).toHaveBeenCalledWith(USER_ID, {
+      price: 1500,
+      durationMonths: 12,
+      comments: "Includes parking",
+    });
+  });
+
+  it("sends nulls rather than empty strings when offer fields are left blank", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Save offer" }));
+
+    await waitFor(() => expect(mockedSetOffer).toHaveBeenCalled());
+    expect(mockedSetOffer).toHaveBeenCalledWith(USER_ID, {
+      price: null,
+      durationMonths: null,
+      comments: null,
+    });
+  });
+
+  it("pre-fills offer fields from existing recorded values", () => {
+    renderPanel({
+      rentalStages: [
+        buildStage({
+          key: "OFFER",
+          label: "Offer",
+          order: 8,
+          hasOfferFields: true,
+          offerPrice: 2000,
+          offerDurationMonths: 24,
+          offerComments: "Renewable",
+        }),
+      ],
+    });
+
+    expect(screen.getByLabelText("Offer price (EUR)")).toHaveValue(2000);
+    expect(screen.getByLabelText("Duration (months)")).toHaveValue(24);
+    expect(screen.getByLabelText("Comments")).toHaveValue("Renewable");
   });
 });
 

@@ -1,20 +1,16 @@
 import Link from "next/link";
 import type { Project } from "@/lib/projects";
-import { RENTAL_STAGES, type RentalStage } from "@/components/ui/RentalRoadmap";
+import type { RentalStageView } from "@/lib/rentalStages";
 import type { MilestoneEntry } from "@/lib/data/construction";
 import type { VisaStepEntry } from "@/lib/data/visa";
 import type { LedgerEntry } from "@/lib/data/ledgers";
-
-const RENTAL_STAGE_LABEL: Record<RentalStage, string> = Object.fromEntries(
-  RENTAL_STAGES.map(({ stage, label }) => [stage, label]),
-) as Record<RentalStage, string>;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" });
 const dateFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 export interface ClientOverviewSummaryProps {
   property: Project | null;
-  rentalStage: RentalStage | null;
+  rentalStages: RentalStageView[];
   milestones: MilestoneEntry[];
   visaSteps: VisaStepEntry[];
   ledgerEntries: LedgerEntry[];
@@ -42,13 +38,14 @@ function SummaryCard({ title, href, children }: { title: string; href: string; c
  */
 export function ClientOverviewSummary({
   property,
-  rentalStage,
+  rentalStages,
   milestones,
   visaSteps,
   ledgerEntries,
 }: ClientOverviewSummaryProps) {
   const completedMilestones = milestones.filter((milestone) => milestone.status === "COMPLETED").length;
   const completedSteps = visaSteps.filter((step) => step.status === "COMPLETED").length;
+  const completedStages = rentalStages.filter((stage) => stage.status === "DONE").length;
   const outstandingBalance = ledgerEntries.reduce((sum, entry) => sum + (entry.amount - entry.amountPaid), 0);
   const nextDue = ledgerEntries.find((entry) => entry.status !== "PAID");
 
@@ -87,7 +84,9 @@ export function ClientOverviewSummary({
       </SummaryCard>
 
       <SummaryCard title="Rental & taxes" href="/dashboard/rental">
-        {rentalStage ? RENTAL_STAGE_LABEL[rentalStage] : "No rental progress yet."}
+        {rentalStages.length > 0
+          ? `${completedStages} of ${rentalStages.length} stages complete`
+          : "No rental progress yet."}
       </SummaryCard>
     </div>
   );

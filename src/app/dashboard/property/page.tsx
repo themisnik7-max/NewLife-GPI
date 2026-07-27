@@ -14,7 +14,7 @@ export default async function PropertyPage() {
   const [snapshot, notifications] = await Promise.all([
     currentUser
       ? getClientPropertySnapshot(currentUser.tenantId, currentUser.userId)
-      : Promise.resolve({ property: null, rentalStage: null }),
+      : Promise.resolve({ property: null }),
     currentUser ? getUserNotifications(currentUser.tenantId, currentUser.userId) : Promise.resolve([]),
   ]);
   const ownedProperty = snapshot.property;

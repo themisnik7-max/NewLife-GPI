@@ -13,6 +13,9 @@ vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    auditLog: {
+      create: vi.fn(),
+    },
     property: {
       findFirst: vi.fn(),
     },
@@ -21,6 +24,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     constructionMilestone: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
       create: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -30,6 +34,7 @@ vi.mock("@/lib/prisma", () => ({
       create: vi.fn(),
       updateMany: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -42,6 +47,7 @@ const mockedFindFirstUser = vi.mocked(prisma.user.findFirst);
 const mockedFindManyMilestones = vi.mocked(prisma.constructionMilestone.findMany);
 const mockedCreateMilestone = vi.mocked(prisma.constructionMilestone.create);
 const mockedUpdateManyMilestones = vi.mocked(prisma.constructionMilestone.updateMany);
+const mockedFindFirstMilestone = vi.mocked(prisma.constructionMilestone.findFirst);
 const mockedFindManySteps = vi.mocked(prisma.visaStep.findMany);
 const mockedFindFirstStep = vi.mocked(prisma.visaStep.findFirst);
 const mockedCreateStep = vi.mocked(prisma.visaStep.create);
@@ -51,6 +57,8 @@ const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
 const PROPERTY_A = "33333333-3333-3333-3333-333333333333";
 const USER_1 = "user_abc123";
+const ACTOR_A = { tenantId: TENANT_A, actorUserId: "user_admin" };
+const ACTOR_B = { tenantId: TENANT_B, actorUserId: "user_admin" };
 
 // Isolation lifecycle note (matching tests/data/businessMetrics.test.ts):
 // every mock here is a fresh vi.fn() reset via .mockReset() in beforeEach —
@@ -58,11 +66,17 @@ const USER_1 = "user_abc123";
 // strip the vi.mock() factory bindings above (see
 // src/app/api/webhooks/clerk/route.test.ts for why that's avoided).
 beforeEach(() => {
+  // TX_PASSTHROUGH: every audited mutation now runs inside
+  // prisma.$transaction; handing the callback the same mock object keeps
+  // each model assertion below valid without rewriting them.
+  vi.mocked(prisma.$transaction).mockImplementation(((cb: (tx: unknown) => unknown) => cb(prisma)) as never);
+  vi.mocked(prisma.auditLog.create).mockReset().mockResolvedValue({} as never);
   mockedFindFirstProperty.mockReset();
   mockedFindFirstUser.mockReset();
   mockedFindManyMilestones.mockReset();
   mockedCreateMilestone.mockReset();
   mockedUpdateManyMilestones.mockReset();
+  mockedFindFirstMilestone.mockReset();
   mockedFindManySteps.mockReset();
   mockedFindFirstStep.mockReset();
   mockedCreateStep.mockReset();
@@ -306,7 +320,7 @@ describe("createMilestone", () => {
     mockedFindFirstProperty.mockResolvedValueOnce({ id: PROPERTY_A } as never);
     mockedCreateMilestone.mockResolvedValueOnce(MILESTONE_ROW as never);
 
-    await createMilestone(TENANT_A, PROPERTY_A, { title: "Roofing", targetDate: "2026-11-01" });
+    await createMilestone(ACTOR_A, PROPERTY_A, { title: "Roofing", targetDate: "2026-11-01" });
 
     expect(mockedCreateMilestone).toHaveBeenCalledWith({
       data: {
@@ -323,7 +337,7 @@ describe("createMilestone", () => {
   it("THROWS (rather than returning empty like the read path) when writing against another tenant's property", async () => {
     mockedFindFirstProperty.mockResolvedValueOnce(null);
 
-    await expect(createMilestone(TENANT_B, PROPERTY_A, { title: "X", targetDate: "2026-11-01" })).rejects.toThrow(
+    await expect(createMilestone(ACTOR_B, PROPERTY_A, { title: "X", targetDate: "2026-11-01" })).rejects.toThrow(
       /was not found for tenant/,
     );
     expect(mockedCreateMilestone).not.toHaveBeenCalled();
@@ -333,7 +347,7 @@ describe("createMilestone", () => {
     ["an empty title", { title: "   ", targetDate: "2026-11-01" }, /title must not be empty/],
     ["an invalid targetDate", { title: "X", targetDate: "nope" }, /targetDate is not a valid date/],
   ])("rejects %s without touching the database", async (_label, input, expected) => {
-    await expect(createMilestone(TENANT_A, PROPERTY_A, input)).rejects.toThrow(expected);
+    await expect(createMilestone(ACTOR_A, PROPERTY_A, input)).rejects.toThrow(expected);
     expect(mockedFindFirstProperty).not.toHaveBeenCalled();
     expect(mockedCreateMilestone).not.toHaveBeenCalled();
   });
@@ -341,9 +355,10 @@ describe("createMilestone", () => {
 
 describe("updateMilestoneStatus", () => {
   it("stamps a completionDate when the milestone reaches COMPLETED", async () => {
+    mockedFindFirstMilestone.mockResolvedValueOnce({ status: "PENDING" } as never);
     mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 1 } as never);
 
-    await updateMilestoneStatus(TENANT_A, "milestone-1", "COMPLETED");
+    await updateMilestoneStatus(ACTOR_A, "milestone-1", "COMPLETED");
 
     const callArgs = mockedUpdateManyMilestones.mock.calls[0][0];
     expect(callArgs.where).toEqual({ id: "milestone-1", tenantId: TENANT_A });
@@ -353,23 +368,24 @@ describe("updateMilestoneStatus", () => {
 
   it("clears completionDate when a milestone is moved back off COMPLETED", async () => {
     // A row must never claim a completion date for work that isn't finished.
+    mockedFindFirstMilestone.mockResolvedValueOnce({ status: "COMPLETED" } as never);
     mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 1 } as never);
 
-    await updateMilestoneStatus(TENANT_A, "milestone-1", "IN_PROGRESS");
+    await updateMilestoneStatus(ACTOR_A, "milestone-1", "IN_PROGRESS");
 
     expect(mockedUpdateManyMilestones.mock.calls[0][0].data.completionDate).toBeNull();
   });
 
   it("throws when the milestone belongs to a different tenant (updateMany matched nothing)", async () => {
-    mockedUpdateManyMilestones.mockResolvedValueOnce({ count: 0 } as never);
+    mockedFindFirstMilestone.mockResolvedValueOnce(null);
 
-    await expect(updateMilestoneStatus(TENANT_B, "milestone-1", "COMPLETED")).rejects.toThrow(
+    await expect(updateMilestoneStatus(ACTOR_B, "milestone-1", "COMPLETED")).rejects.toThrow(
       /was not found for tenant/,
     );
   });
 
   it("rejects an unrecognized status before writing", async () => {
-    await expect(updateMilestoneStatus(TENANT_A, "milestone-1", "ON_HOLD" as never)).rejects.toThrow(
+    await expect(updateMilestoneStatus(ACTOR_A, "milestone-1", "ON_HOLD" as never)).rejects.toThrow(
       /Unrecognized construction milestone status/,
     );
     expect(mockedUpdateManyMilestones).not.toHaveBeenCalled();
@@ -397,7 +413,7 @@ describe("createVisaStep", () => {
     mockedFindFirstStep.mockResolvedValueOnce({ stepOrder: 2 } as never);
     mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
 
-    await createVisaStep(TENANT_A, USER_1, { title: "Biometrics appointment" });
+    await createVisaStep(ACTOR_A, USER_1, { title: "Biometrics appointment" });
 
     expect(mockedCreateStep).toHaveBeenCalledWith({
       data: {
@@ -416,7 +432,7 @@ describe("createVisaStep", () => {
     mockedFindFirstStep.mockResolvedValueOnce(null);
     mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
 
-    await createVisaStep(TENANT_A, USER_1, { title: "Submit application" });
+    await createVisaStep(ACTOR_A, USER_1, { title: "Submit application" });
 
     expect(mockedCreateStep.mock.calls[0][0].data.stepOrder).toBe(1);
   });
@@ -425,7 +441,7 @@ describe("createVisaStep", () => {
     mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
     mockedCreateStep.mockResolvedValueOnce(STEP_ROW as never);
 
-    await createVisaStep(TENANT_A, USER_1, { title: "Inserted step", stepOrder: 2 });
+    await createVisaStep(ACTOR_A, USER_1, { title: "Inserted step", stepOrder: 2 });
 
     expect(mockedFindFirstStep).not.toHaveBeenCalled();
     expect(mockedCreateStep.mock.calls[0][0].data.stepOrder).toBe(2);
@@ -434,19 +450,19 @@ describe("createVisaStep", () => {
   it("throws when the user belongs to a different tenant", async () => {
     mockedFindFirstUser.mockResolvedValueOnce(null);
 
-    await expect(createVisaStep(TENANT_B, USER_1, { title: "X" })).rejects.toThrow(/was not found for tenant/);
+    await expect(createVisaStep(ACTOR_B, USER_1, { title: "X" })).rejects.toThrow(/was not found for tenant/);
     expect(mockedCreateStep).not.toHaveBeenCalled();
   });
 
   it("rejects an empty title without touching the database", async () => {
-    await expect(createVisaStep(TENANT_A, USER_1, { title: "  " })).rejects.toThrow(/title must not be empty/);
+    await expect(createVisaStep(ACTOR_A, USER_1, { title: "  " })).rejects.toThrow(/title must not be empty/);
     expect(mockedFindFirstUser).not.toHaveBeenCalled();
   });
 
   it("rejects a non-positive explicit stepOrder", async () => {
     mockedFindFirstUser.mockResolvedValueOnce({ id: USER_1 } as never);
 
-    await expect(createVisaStep(TENANT_A, USER_1, { title: "X", stepOrder: 0 })).rejects.toThrow(
+    await expect(createVisaStep(ACTOR_A, USER_1, { title: "X", stepOrder: 0 })).rejects.toThrow(
       /stepOrder must be a positive integer/,
     );
     expect(mockedCreateStep).not.toHaveBeenCalled();
@@ -455,9 +471,10 @@ describe("createVisaStep", () => {
 
 describe("updateVisaStepStatus", () => {
   it("stamps completedAt when the step reaches COMPLETED", async () => {
+    mockedFindFirstStep.mockResolvedValueOnce({ status: "PENDING" } as never);
     mockedUpdateManySteps.mockResolvedValueOnce({ count: 1 } as never);
 
-    await updateVisaStepStatus(TENANT_A, "step-1", "COMPLETED");
+    await updateVisaStepStatus(ACTOR_A, "step-1", "COMPLETED");
 
     const callArgs = mockedUpdateManySteps.mock.calls[0][0];
     expect(callArgs.where).toEqual({ id: "step-1", tenantId: TENANT_A });
@@ -465,21 +482,22 @@ describe("updateVisaStepStatus", () => {
   });
 
   it("clears completedAt when a step is moved back off COMPLETED", async () => {
+    mockedFindFirstStep.mockResolvedValueOnce({ status: "COMPLETED" } as never);
     mockedUpdateManySteps.mockResolvedValueOnce({ count: 1 } as never);
 
-    await updateVisaStepStatus(TENANT_A, "step-1", "PENDING");
+    await updateVisaStepStatus(ACTOR_A, "step-1", "PENDING");
 
     expect(mockedUpdateManySteps.mock.calls[0][0].data.completedAt).toBeNull();
   });
 
   it("throws when the step belongs to a different tenant", async () => {
-    mockedUpdateManySteps.mockResolvedValueOnce({ count: 0 } as never);
+    mockedFindFirstStep.mockResolvedValueOnce(null);
 
-    await expect(updateVisaStepStatus(TENANT_B, "step-1", "COMPLETED")).rejects.toThrow(/was not found for tenant/);
+    await expect(updateVisaStepStatus(ACTOR_B, "step-1", "COMPLETED")).rejects.toThrow(/was not found for tenant/);
   });
 
   it("rejects an unrecognized status before writing", async () => {
-    await expect(updateVisaStepStatus(TENANT_A, "step-1", "ON_HOLD" as never)).rejects.toThrow(
+    await expect(updateVisaStepStatus(ACTOR_A, "step-1", "ON_HOLD" as never)).rejects.toThrow(
       /Unrecognized visa step status/,
     );
     expect(mockedUpdateManySteps).not.toHaveBeenCalled();

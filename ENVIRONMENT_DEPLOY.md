@@ -2,15 +2,15 @@
 
 An ordered, operational runbook for taking this project from a working local
 checkout to a live production deployment. This file tells you **what to do,
-in what order**. For **why** the Clerk/Supabase pieces work the way they do
-(and the exact dashboard menu paths, verified against live docs on
-2026-07-19), see `ARCHITECTURE.md`'s "Clerk ↔ Supabase Third-Party Auth"
-section — this document references it rather than duplicating it, so the two
-can't silently drift apart.
+in what order**. For **why** the data layer works the way it does, see
+`ARCHITECTURE.md`'s "Data access: Prisma only" section — this document
+references it rather than duplicating it, so the two can't silently drift
+apart.
 
-Nothing in this checklist has been executed yet. It is written from the
-current repo state (`git remote` is `https://github.com/themisnik7-max/NewLife-GPI.git`),
-not from having actually run a deployment.
+This project is deployed (Vercel, `https://newlife-gpi.vercel.app`, auto-deploying
+from `main` on `https://github.com/themisnik7-max/NewLife-GPI.git`), so §1–§6
+have been executed at least once. Treat unchecked boxes as "verify for your
+own environment", not "never done".
 
 ---
 
@@ -37,6 +37,14 @@ Copy `.env.example` and fill in real values. Split across two files exactly as `
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` / `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | `.env.local` | Required | Your own route paths (`/sign-in`, `/sign-up` — already the values in `.env.example`) |
 | `CLERK_WEBHOOK_SECRET` | `.env.local` | **Not set yet** | Clerk Dashboard → Webhooks → your endpoint → Signing Secret (see §2 below — the endpoint has to exist before this secret exists) |
 | `API_KEY_ENCRYPTION_SECRET` | `.env` | **Not set yet** | Generate yourself: `openssl rand -base64 32`. Must decode to exactly 32 bytes — `src/lib/data/apiKeys.ts` throws otherwise. |
+| `SUPABASE_URL` | `.env.local` | **Optional** | Supabase Dashboard → Project Settings → Data API → Project URL. Needed only for rental-stage file attachments. |
+| `SUPABASE_SECRET_KEY` | `.env.local` | **Optional** | Supabase Dashboard → Project Settings → API Keys → **Secret keys** (`sb_secret_…`). Server-only; bypasses storage RLS, so never prefix it `NEXT_PUBLIC_`. |
+
+**File storage (optional, one-time).** Rental-stage PDF/photo slots use Supabase Storage. To enable them:
+1. Set `SUPABASE_URL` and `SUPABASE_SECRET_KEY` above (locally **and** in Vercel).
+2. Supabase Dashboard → Storage → **New bucket** → name it exactly `rental-documents`, and leave **"Public bucket" OFF** — downloads are served through short-lived signed URLs generated server-side, so a public bucket would defeat that.
+
+Until both are done the app runs normally; only the attachment slots are inert, showing "File storage is not configured". This uses `@supabase/supabase-js` for Storage **only** — it is not a return of the PostgREST data path removed on 2026-07-27, and needs no Clerk↔Supabase JWT bridge.
 
 ⚠️ `API_KEY_ENCRYPTION_SECRET` has no versioning in this schema (see `.env.example`'s own comment and `EncryptedApiKey` in `prisma/schema.prisma`). Generate it once, store it durably (e.g. in your password manager, not just in Vercel's dashboard alone), and treat rotating it as **destroying every previously-encrypted API key** — there is no re-encryption migration path today.
 
@@ -49,20 +57,10 @@ Copy `.env.example` and fill in real values. Split across two files exactly as `
 These cannot be scripted — they require clicking through the Clerk dashboard by hand.
 
 > **No longer required (2026-07-27):** the Clerk ↔ Supabase Third-Party Auth bridge, and the `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` variables it needed. The app reads Postgres exclusively through Prisma now; nothing goes through PostgREST. See `ARCHITECTURE.md` → "Data access: Prisma only". Supabase is still the database — only its JS client was removed.
-- [ ] If you develop locally against the Supabase CLI (not just the hosted dashboard), create `supabase/config.toml` (it does not exist in this repo yet) with:
-  ```toml
-  [auth.third_party.clerk]
-  enabled = true
-  domain = "your-app.clerk.accounts.dev"
-  ```
-- [ ] **Clerk Dashboard** → Configure → Sessions → Customize session token → add the `publicMetadata` claim (needed only for `app.is_admin()` in the RLS policies; see ARCHITECTURE.md's ⚠️ note — this exact menu path was not independently re-verified against live docs, confirm it still matches before relying on it):
-  ```json
-  { "publicMetadata": "{{user.public_metadata}}" }
-  ```
 - [ ] **Clerk Dashboard** → Webhooks → Add Endpoint → point it at `https://<your-production-domain>/api/webhooks/clerk`, subscribe to `user.created`, `user.updated`, `organization.created`, `organizationMembership.created`, `organizationMembership.updated`, and `organizationMembership.deleted` → copy the **Signing Secret** into `CLERK_WEBHOOK_SECRET` (§1). The four organization-related event types back real multi-client tenancy (see `src/app/api/webhooks/clerk/route.ts`) — omitting them here means an admin's `/dashboard/team` invites never actually attach the invited client to the right tenant in production.
 - [ ] Set every "Not set yet" row from §1 in both your local `.env`/`.env.local` **and** your host's production environment variables.
 
-If any of Steps 1–2 above are skipped, nothing errors loudly — `auth.jwt()` simply resolves to `NULL` inside Postgres, and every RLS policy that depends on it silently denies. See the verification checklist in §7 before trusting that this part is actually working.
+Skipping the webhook endpoint fails quietly rather than loudly: new Clerk signups simply never appear in `public.users`, and the affected account then sees "Your account is not yet synced" instead of an error. See the verification checklist in §7.
 
 ---
 
@@ -103,6 +101,7 @@ The real pipeline:
    supabase/migrations/0005_construction_and_visa.sql
    supabase/migrations/0006_notifications_and_user_name.sql
    supabase/migrations/0007_clerk_organizations.sql
+   supabase/migrations/0008_audit_log_and_rental_stages.sql
    ```
    Either:
    - `supabase db push` (Supabase CLI, linked to your project via `supabase link`), or

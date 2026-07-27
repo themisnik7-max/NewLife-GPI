@@ -11,6 +11,8 @@ import { getPropertyMilestones } from "@/lib/data/construction";
 import { getUserVisaSteps } from "@/lib/data/visa";
 import { getUserLedger } from "@/lib/data/ledgers";
 import { getActiveProjects } from "@/lib/data/projects";
+import { getClientRentalStages } from "@/lib/data/rentalStages";
+import { isStorageConfigured } from "@/lib/storage";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/lib/auth/role";
@@ -43,13 +45,14 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
     notFound();
   }
 
-  const [{ property, rentalStage }, visaSteps, ledgerEntries, notifications, availableProperties] =
+  const [{ property }, visaSteps, ledgerEntries, notifications, availableProperties, rentalStages] =
     await Promise.all([
       getClientPropertySnapshot(currentUser.tenantId, targetUser.id),
       getUserVisaSteps(currentUser.tenantId, targetUser.id),
       getUserLedger(currentUser.tenantId, targetUser.id),
       getUserNotifications(currentUser.tenantId, currentUser.userId),
       getActiveProjects(currentUser.tenantId),
+      getClientRentalStages(currentUser.tenantId, targetUser.id),
     ]);
   const milestones = property ? await getPropertyMilestones(currentUser.tenantId, property.id) : [];
 
@@ -73,7 +76,7 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
           </Link>
           <ClientOverviewSummary
             property={property}
-            rentalStage={rentalStage}
+            rentalStages={rentalStages}
             milestones={milestones}
             visaSteps={visaSteps}
             ledgerEntries={ledgerEntries}
@@ -82,8 +85,9 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
             userId={targetUser.id}
             availableProperties={availableProperties}
             assignedProperty={property}
-            currentRentalStage={rentalStage}
+            rentalStages={rentalStages}
             visaSteps={visaSteps}
+            storageConfigured={isStorageConfigured()}
           />
         </main>
       </div>

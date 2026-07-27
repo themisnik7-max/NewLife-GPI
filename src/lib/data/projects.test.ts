@@ -12,12 +12,16 @@ vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    auditLog: {
+      create: vi.fn(),
+    },
     property: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
       create: vi.fn(),
       updateMany: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -27,6 +31,11 @@ const mockedCreate = vi.mocked(prisma.property.create);
 const mockedUpdateMany = vi.mocked(prisma.property.updateMany);
 
 beforeEach(() => {
+  // TX_PASSTHROUGH: every audited mutation now runs inside
+  // prisma.$transaction; handing the callback the same mock object keeps
+  // each model assertion below valid without rewriting them.
+  vi.mocked(prisma.$transaction).mockImplementation(((cb: (tx: unknown) => unknown) => cb(prisma)) as never);
+  vi.mocked(prisma.auditLog.create).mockReset().mockResolvedValue({} as never);
   mockedFindMany.mockReset();
   mockedFindFirst.mockReset();
   mockedCreate.mockReset();
@@ -34,6 +43,7 @@ beforeEach(() => {
 });
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
+const ACTOR_A = { tenantId: TENANT_A, actorUserId: "user_admin" };
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
 
 // Deliberately shaped like the real Prisma-generated Property type: Date
@@ -198,7 +208,7 @@ describe("createProperty", () => {
     // assertions below are on what was actually passed to prisma.property.create.
     mockedCreate.mockResolvedValueOnce(buildPrismaProperty({ id: "new-prop" }) as never);
 
-    await createProperty(TENANT_A, VALID_INPUT);
+    await createProperty(ACTOR_A, VALID_INPUT);
 
     expect(mockedCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -216,7 +226,7 @@ describe("createProperty", () => {
   it("derives imageUrl and mapUrl from name/address when not supplied", async () => {
     mockedCreate.mockResolvedValueOnce(buildPrismaProperty({ id: "new-prop" }) as never);
 
-    await createProperty(TENANT_A, VALID_INPUT);
+    await createProperty(ACTOR_A, VALID_INPUT);
 
     const callArgs = mockedCreate.mock.calls[0][0];
     expect(callArgs.data.imageUrl).toContain("New%20Villa");
@@ -226,7 +236,7 @@ describe("createProperty", () => {
   it("uses caller-supplied imageUrl/mapUrl/status/pptUrl instead of deriving them when provided", async () => {
     mockedCreate.mockResolvedValueOnce(buildPrismaProperty({ id: "new-prop" }) as never);
 
-    await createProperty(TENANT_A, {
+    await createProperty(ACTOR_A, {
       ...VALID_INPUT,
       imageUrl: "https://example.com/real.png",
       mapUrl: "https://example.com/real-map",
@@ -259,7 +269,7 @@ describe("createProperty", () => {
     ["deliveryDate", { ...VALID_INPUT, deliveryDate: "not-a-date" }, /deliveryDate is not a valid date/],
     ["contractDate", { ...VALID_INPUT, contractDate: "not-a-date" }, /contractDate is not a valid date/],
   ])("rejects invalid %s without ever calling prisma.property.create", async (_label, input, expectedError) => {
-    await expect(createProperty(TENANT_A, input)).rejects.toThrow(expectedError);
+    await expect(createProperty(ACTOR_A, input)).rejects.toThrow(expectedError);
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 });
@@ -268,7 +278,7 @@ describe("updateProperty", () => {
   it("throws when the property does not belong to (or does not exist for) the given tenant, without calling updateMany", async () => {
     mockedFindFirst.mockResolvedValueOnce(null);
 
-    await expect(updateProperty(TENANT_A, "prop-1", { name: "New Name" })).rejects.toThrow(
+    await expect(updateProperty(ACTOR_A, "prop-1", { name: "New Name" })).rejects.toThrow(
       /was not found for tenant/,
     );
     expect(mockedUpdateMany).not.toHaveBeenCalled();
@@ -279,7 +289,7 @@ describe("updateProperty", () => {
     mockedUpdateMany.mockResolvedValueOnce({ count: 1 });
     mockedFindFirst.mockResolvedValueOnce(buildPrismaProperty({ availableUnits: 2, totalUnits: 10 }) as never);
 
-    await updateProperty(TENANT_A, "prop-1", { availableUnits: 2 });
+    await updateProperty(ACTOR_A, "prop-1", { availableUnits: 2 });
 
     expect(mockedUpdateMany).toHaveBeenCalledWith({
       where: { id: "prop-1", tenantId: TENANT_A },
@@ -294,7 +304,7 @@ describe("updateProperty", () => {
     // would make (decrementing/adjusting availableUnits alone).
     mockedFindFirst.mockResolvedValueOnce(buildPrismaProperty({ availableUnits: 3, totalUnits: 10 }) as never);
 
-    await expect(updateProperty(TENANT_A, "prop-1", { availableUnits: 11 })).rejects.toThrow(
+    await expect(updateProperty(ACTOR_A, "prop-1", { availableUnits: 11 })).rejects.toThrow(
       /availableUnits cannot exceed totalUnits/,
     );
     expect(mockedUpdateMany).not.toHaveBeenCalled();
@@ -305,7 +315,7 @@ describe("updateProperty", () => {
     mockedUpdateMany.mockResolvedValueOnce({ count: 1 });
     mockedFindFirst.mockResolvedValueOnce(buildPrismaProperty({ name: "Updated Name" }) as never);
 
-    const result = await updateProperty(TENANT_A, "prop-1", { name: "Updated Name" });
+    const result = await updateProperty(ACTOR_A, "prop-1", { name: "Updated Name" });
 
     expect(result.name).toBe("Updated Name");
   });
@@ -313,7 +323,7 @@ describe("updateProperty", () => {
   it("rejects an empty name without calling updateMany", async () => {
     mockedFindFirst.mockResolvedValueOnce(buildPrismaProperty() as never);
 
-    await expect(updateProperty(TENANT_A, "prop-1", { name: "   " })).rejects.toThrow(/name must not be empty/);
+    await expect(updateProperty(ACTOR_A, "prop-1", { name: "   " })).rejects.toThrow(/name must not be empty/);
     expect(mockedUpdateMany).not.toHaveBeenCalled();
   });
 });
