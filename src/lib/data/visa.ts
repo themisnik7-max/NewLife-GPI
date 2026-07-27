@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
+import { toDisplayName } from "@/lib/clientName";
+import { Role } from "@/lib/auth/role";
 import type { VisaStep } from "@/generated/prisma/client";
 
 /**
@@ -77,6 +79,53 @@ export async function getUserVisaSteps(tenantId: string, userId: string): Promis
   });
 
   return rows.map(toVisaStepEntry);
+}
+
+export interface ClientVisaJourney {
+  userId: string;
+  name: string;
+  email: string;
+  steps: VisaStepEntry[];
+  completed: number;
+  total: number;
+}
+
+/**
+ * Every client's Golden Visa journey in one pass — the admin roll-up.
+ *
+ * Includes clients with NO steps yet, returning an empty timeline for them.
+ * That is the whole point of a supervisor view: a client whose application
+ * has not been started is precisely the one an admin needs to see, and
+ * filtering to `visaSteps: { some: {} }` would hide them.
+ *
+ * Ordered by fewest completed steps first, so whoever is furthest behind
+ * appears at the top. Ties break on name for a stable, predictable order
+ * rather than whatever the database happens to return.
+ *
+ * Admin callers only — this returns other users' data and cannot check the
+ * session itself. See getUserVisaSteps() above for the single-client
+ * equivalent, and ARCHITECTURE.md for why Prisma reads carry no RLS
+ * protection.
+ */
+export async function getTenantVisaOverview(tenantId: string): Promise<ClientVisaJourney[]> {
+  const users = await prisma.user.findMany({
+    where: { tenantId, role: Role.TENANT },
+    include: { visaSteps: { orderBy: { stepOrder: "asc" } } },
+  });
+
+  return users
+    .map((user) => {
+      const steps = user.visaSteps.map(toVisaStepEntry);
+      return {
+        userId: user.id,
+        name: toDisplayName(user.firstName, user.lastName, user.email),
+        email: user.email,
+        steps,
+        completed: steps.filter((step) => step.status === MilestoneStatusValue.COMPLETED).length,
+        total: steps.length,
+      };
+    })
+    .sort((a, b) => a.completed - b.completed || a.name.localeCompare(b.name));
 }
 
 export interface VisaStepInput {

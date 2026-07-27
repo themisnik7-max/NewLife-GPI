@@ -910,3 +910,59 @@ Slots are assigned exactly as specified (4 PDF, 1 photo). `PROFESSIONAL_PHOTO_VI
 - **Status:** Complete and verified. **Blocked on the user (uploads only):** `SUPABASE_URL` + `SUPABASE_SECRET_KEY` in `.env.local` and Vercel, and creating the private `rental-documents` bucket — the Supabase CLI has no bucket-creation subcommand (only `ls`/`cp`/`mv`/`rm`), and the secret key is masked by the CLI so it can't be read programmatically. Everything else works without it. Still open from prior entries: `AiLogStatus` remains the last Prisma enum of the known bad class (unreachable — nothing writes `ai_logs`); no delete operations for any entity; no audit-viewer UI.
 
 <!-- Future entries go below this line, most recent last -->
+
+## 2026-07-27 — Admin as the system of record
+
+**Request:** the admin account should be the monitor/supervisor and the source of all information, with each client's account showing their own slice of it. "My Property" should list every project already sold (click through to who bought it and when); a new Clients feature should hold every client profile; Golden Visa should show every client's journey; Payments every pending and completed payment; Rentals every property for rental.
+
+Before this, **every dashboard page was hard-scoped to `getUserX(tenantId, userId)`**. The admin therefore saw empty states everywhere except Overview, which was the client table. The supervisor view did not exist.
+
+### Four decisions taken with the user before building
+
+1. **How does a property become a rental?** Nothing in the schema could say. The ten-stage letting workflow (0008) hangs off a *user*, so a property was invisible as a rental until someone ticked its first stage — hiding precisely the units needing attention. Added an explicit admin-set `properties.listed_for_rental` flag; "we have four units to let, one not started" is now answerable.
+2. **What does Overview become?** The client roster moved to its own route (`/dashboard/clients`) and Overview became a business snapshot. A roster is what you open to find a person; a supervisor's home screen should say how the business is doing.
+3. **Client profiles.** Added `phone`, `nationality`, `passport_number`, `date_of_birth`, `admin_notes` to `users`. Stored here rather than in Clerk's `publicMetadata` because the stated goal is analysable data, and provider metadata is queryable one user at a time. Name and email stay Clerk-owned and webhook-synced — duplicating them as editable columns would create two sources of truth that drift.
+4. **"Who bought, and when."** The only date available was `property_ownerships.created_at`, which is when an admin recorded the ownership *in this app* — not the sale date for anything sold beforehand. Added `sale_date` and `sale_price` as separate columns so neither has to lie, and surfaced both side by side in the UI, labelled distinctly.
+
+### Migration 0009 — additive only, no backfill
+
+Unlike 0008, nothing here drops or rewrites data. Every column is nullable, or defaults to a value genuinely correct for every existing row (`listed_for_rental = false` means "for sale", which every current property is).
+
+**Deliberately no backfill of `sale_date` from `created_at`.** Copying it would manufacture a date nobody verified and would be indistinguishable from a real one afterwards. Existing rows read "Not recorded" until an admin enters the true value, and the recorded-in-app timestamp is displayed alongside — named as what it is — so the two can never be confused.
+
+`sale_price` carries a `check (sale_price is null or sale_price > 0)`, enforced in application code *as well*, so the admin sees a sentence rather than a constraint violation while the column stays protected against anything writing outside the app. `numeric(12,2)`, matching `rental_stage_records.offer_price` — `payment_ledger`'s older `double precision` columns are left alone rather than migrated as a side effect. The rental flag gets a **partial** index (`where listed_for_rental`): the page asks only for true rows, and that will stay a small minority.
+
+### Role scoping is now a first-class architectural rule
+
+Documented in ARCHITECTURE.md with the full route table. Three things load-bearing enough to restate:
+
+- **Two functions, never one function with a flag.** Tenant-wide readers (`getTenantVisaOverview`, `getTenantPaymentsOverview`, `getSoldProperties`, `getRentalInventory`, `getClientDirectory`) are separate exports from the per-user ones. A single function whose scope depends on an argument is how a page leaks by passing `undefined`.
+- **`getClientProfile` vs `getOwnClientProfile`.** RLS's `users_select` lets a client read their own row, which now contains `admin_notes` — so **RLS does not protect this field**, and the app reads through Prisma, which ignores RLS anyway. Withholding it is entirely the job of these being two functions rather than one with a boolean. Asserted live: the admin view returns the note, the client's own view returns `null`.
+- **`notFound()`, not a 403**, for a non-admin on an admin route. A 403 confirms the route exists to someone who should not know it does. Verified live: both `/dashboard/clients` and `/dashboard/property/[id]` return a real 404 to a signed-in client.
+
+The admin `/dashboard/property` branch deliberately does **not** reuse `getClientPropertySnapshot` — that function is scoped to one user's own ownership row, and in this deployment the admin shares a tenant with the demo client, so calling it there would show the admin whichever property happened to be theirs rather than the portfolio.
+
+### Smaller judgement calls worth recording
+
+- **One query, not N.** `getClientDirectory` pulls all four workflows through nested selects rather than calling the three per-client functions in a loop; those are right for one client's page and would turn a 40-client roster into 120 round trips. Only counts and sums cross the join, never full rows. Same reasoning in `getRentalInventory`, which fetches every relevant stage record in a single `in` query.
+- **Aggregates for metrics, row sums for tables.** `getTenantMetrics` uses `count`/`aggregate` — it returns no rows for a total to disagree with. `getTenantPaymentsOverview` computes its totals from the same rows it returns: two queries could diverge if a payment lands between them, and a table whose footer doesn't add up is worse than a slightly stale one.
+- **The gap in a number is shown next to the number.** "Sales recorded €425,000" carries "excludes N sales with no price on file" whenever N > 0. A portfolio total computed from partial data is misleading unless its incompleteness is equally visible.
+- **A listed property with no owner renders "No client assigned"**, not a blank cell — that state is the reason the explicit flag exists, and naming it says what to do about it.
+- Renamed the payments column header from "Paid" to **"Collected"**: it sat directly beside a status badge also reading "Paid", and the two mean different things (an amount vs a state). Caught by a test collision, but a real ambiguity for readers.
+- Fixed "1 sale **have** no price recorded" — verb agreement, caught while covering the singular branch.
+- Team's sidebar icon moved from `Users` to `Shield` because Clients now owns `Users`; a test asserts every nav icon is distinct.
+- Extracted `src/lib/clientName.ts` and `src/lib/format.ts`: five admin views render a client's name and six render money/dates, each of which had started growing its own copy. Two pages disagreeing on whether €1,250.50 shows its cents is the kind of thing nobody files a bug for and everybody notices.
+
+### Verification
+
+`npx tsc --noEmit` clean → `npm run test` **564/564 (43 files, up from 475/35)** → per-file coverage **100%** on every new module (`portfolio.ts`, `metrics.ts`, `clientName.ts`, `format.ts`) and every changed one (`clients.ts`, `ledgers.ts`, `visa.ts`, `propertyOwnership.ts`) and all eight new components → `npm run build` clean, both new routes present.
+
+**Live Postgres round-trip** (mocked tests are blind to the `text + check` bug class): every new tenant-wide read executed against real data without a type mismatch; `sale_price` round-tripped as `427500.5` with cents intact through Prisma's `Decimal`; the `sale_price > 0` **check constraint fired** on a raw negative update, proving it exists rather than assuming; the rental flag surfaced the property in the inventory with `stagesTotal = 10`; profile writes landed and `getOwnClientProfile` returned `adminNotes: null` while the admin view returned the text; eight audit rows recorded across `adminNotes`/`dateOfBirth`/`passportNumber`/`nationality`/`phone`/`listedForRental`/`salePrice`/`saleDate`; a repeat no-op save added none. All test data restored, including deleting the audit rows the run generated — leaving them would put entries for edits nobody made into the very trail the no-op check protects.
+
+**Live browser test, both accounts, real Chrome: 45/45.** Admin sees the KPI Overview, the roster, the sold portfolio with buyers, the sale-details editor, the payments table with totals, and the lettings inventory; the client sees their own unit, own schedule, own tracker, own details on `/settings` with internal notes absent, and gets a genuine 404 on both admin-only routes. An earlier run reported twelve failures — all my own case-sensitive assertions against CSS-uppercased headings (`innerText` returns the rendered casing), confirmed by re-running case-insensitively, not app faults.
+
+One diversion worth noting: mid-run the signed-in root route threw a server exception. It was a stale build — I had run `npm run build` against a stashed tree while diagnosing, so the server was serving baseline code. Rebuilding resolved it; nothing in the app was wrong.
+
+- **Files touched:** `prisma/schema.prisma`, `supabase/migrations/0009_admin_source_of_truth.sql` (created, applied live), `src/lib/data/portfolio.ts` + `metrics.ts` + `src/lib/clientName.ts` + `src/lib/format.ts` (created), `clients.ts`/`ledgers.ts`/`visa.ts`/`propertyOwnership.ts`/`projects.ts` (extended), `src/lib/projects.ts`, six new components, `Sidebar.tsx`, `PropertyForm.tsx`, `ClientProfilePanel.tsx` + `SaleDetailsPanel.tsx` + their actions (created), seven pages, nine new test suites plus five updated, `ARCHITECTURE.md`, `LOGS.md`.
+- **Status:** Complete and verified. Still open from prior entries: `SUPABASE_URL`/`SUPABASE_SECRET_KEY` and the private `rental-documents` bucket are the user's to supply (uploads only); the leaked legacy `service_role` key still wants rotating; `AiLogStatus` remains the last Prisma enum of the known bad class (unreachable); no delete operations for any entity; no audit-viewer UI. **Newly flagged:** `/dashboard/construction` was not in the request and still has no admin branch — it is the one page where an admin sees an empty state.
+

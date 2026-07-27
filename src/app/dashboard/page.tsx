@@ -1,12 +1,10 @@
-import Link from "next/link";
-import { UserPlus } from "lucide-react";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
-import { ClientTable } from "@/components/ui/ClientTable";
+import { MetricsDashboard } from "@/components/ui/MetricsDashboard";
 import { ClientOverviewSummary } from "@/components/ui/ClientOverviewSummary";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserNotifications } from "@/lib/data/notifications";
-import { getTenantClients } from "@/lib/data/clients";
+import { getTenantMetrics } from "@/lib/data/metrics";
 import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
 import { getClientRentalStages } from "@/lib/data/rentalStages";
 import { getPropertyMilestones } from "@/lib/data/construction";
@@ -16,15 +14,18 @@ import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
 /**
- * Overview shows a genuinely different screen per role, per the actual
- * product requirement — not two variations of the same layout:
- *   - ADMIN: a table of every client in the tenant (ClientTable, wired to
- *     real data), each row linking to that client's own detail page.
+ * Overview shows a genuinely different screen per role:
+ *   - ADMIN: a business-wide snapshot (MetricsDashboard) — clients,
+ *     properties sold, money outstanding, workflow progress — with every
+ *     card linking to the page that owns its detail.
  *   - TENANT: the same ClientOverviewSummary aggregate an admin sees when
  *     drilling into a specific client (src/app/dashboard/clients/[userId]),
  *     just fed the signed-in user's own data.
- * Both branches were previously a single hardcoded ClientTable with mock
- * data and no role check at all.
+ *
+ * The admin branch used to be the client roster. That moved to its own page
+ * (/dashboard/clients) so Overview could become what a supervisor actually
+ * opens first: the state of the business, not a list to scroll. The roster is
+ * one click away, and the Clients card links straight to it.
  */
 export default async function DashboardPage() {
   const currentUser = await getCurrentUser();
@@ -45,39 +46,27 @@ export default async function DashboardPage() {
       <Sidebar activeKey="overview" client={{ property: currentUser.email }} isAdmin={isAdmin} />
       <div className="flex flex-1 flex-col">
         <TopNav
-          title={isAdmin ? "Clients" : "Overview"}
-          subtitle={isAdmin ? "All active NewLife GPI clients." : "Here's where things stand today."}
+          title="Overview"
+          subtitle={isAdmin ? "The whole business at a glance." : "Here's where things stand today."}
           userName={currentUser.name}
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
-          {isAdmin && (
-            <div className="flex justify-end">
-              {/* Links to the existing Clerk <OrganizationProfile /> invite
-                  flow (built with Clerk Organizations) rather than adding a
-                  second, parallel add-client mechanism — it was already
-                  built, just not reachable from where an admin looks for it. */}
-              <Link
-                href="/dashboard/team"
-                className="inline-flex items-center gap-1.5 rounded-md bg-aegean-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-aegean-700"
-              >
-                <UserPlus size={14} aria-hidden="true" />
-                Invite Client
-              </Link>
-            </div>
-          )}
-          {isAdmin ? <AdminClientList tenantId={currentUser.tenantId} /> : <OwnOverview tenantId={currentUser.tenantId} userId={currentUser.userId} />}
+          {/* "Invite Client" moved to /dashboard/clients along with the
+              roster — it belongs next to the list it adds to, not on a
+              summary screen. */}
+          {isAdmin ? <AdminOverview tenantId={currentUser.tenantId} /> : <OwnOverview tenantId={currentUser.tenantId} userId={currentUser.userId} />}
         </main>
       </div>
     </div>
   );
 }
 
-async function AdminClientList({ tenantId }: { tenantId: string }) {
-  const clients = await getTenantClients(tenantId);
-  return <ClientTable clients={clients} />;
+async function AdminOverview({ tenantId }: { tenantId: string }) {
+  const metrics = await getTenantMetrics(tenantId);
+  return <MetricsDashboard metrics={metrics} />;
 }
 
 async function OwnOverview({ tenantId, userId }: { tenantId: string; userId: string }) {

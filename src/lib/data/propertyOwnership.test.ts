@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   assignPropertyToClient,
   getClientPropertySnapshot,
+  getOwnershipsForProperty,
+  updateSaleDetails,
 } from "@/lib/data/propertyOwnership";
 import { prisma } from "@/lib/prisma";
 
@@ -18,8 +20,10 @@ vi.mock("@/lib/prisma", () => ({
     },
     propertyOwnership: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     property: {
       findFirst: vi.fn(),
@@ -36,6 +40,8 @@ const mockedOwnershipCreate = vi.mocked(prisma.propertyOwnership.create);
 const mockedOwnershipUpdate = vi.mocked(prisma.propertyOwnership.update);
 const mockedPropertyFindFirst = vi.mocked(prisma.property.findFirst);
 const mockedUserFindFirst = vi.mocked(prisma.user.findFirst);
+const mockedOwnershipFindMany = vi.mocked(prisma.propertyOwnership.findMany);
+const mockedOwnershipUpdateMany = vi.mocked(prisma.propertyOwnership.updateMany);
 
 beforeEach(() => {
   // TX_PASSTHROUGH: every audited mutation now runs inside
@@ -48,6 +54,8 @@ beforeEach(() => {
   mockedOwnershipUpdate.mockReset();
   mockedPropertyFindFirst.mockReset();
   mockedUserFindFirst.mockReset();
+  mockedOwnershipFindMany.mockReset();
+  mockedOwnershipUpdateMany.mockReset();
 });
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
@@ -71,6 +79,7 @@ describe("getClientPropertySnapshot", () => {
     energyClass: "A",
     imageUrl: "https://placehold.co/800x450?text=Villa+Elytra",
     status: "UNDER_CONSTRUCTION",
+    listedForRental: false,
     mapUrl: "https://www.google.com/maps/search/?api=1&query=Chania",
     pptUrl: null,
     createdAt: new Date("2026-01-01"),
@@ -139,9 +148,51 @@ describe("assignPropertyToClient", () => {
       where: { id: "user_1", tenantId: TENANT_A },
       select: { id: true },
     });
+    // Sale date and price are written as explicit nulls when not supplied.
+    // Asserted rather than loosened to `objectContaining`: an assignment
+    // that silently carried over a previous caller's sale figures would be a
+    // real bug, and only an exact payload check catches it.
     expect(mockedOwnershipCreate).toHaveBeenCalledWith({
-      data: { tenantId: TENANT_A, userId: "user_1", propertyId: PROPERTY_1 },
+      data: { tenantId: TENANT_A, userId: "user_1", propertyId: PROPERTY_1, saleDate: null, salePrice: null },
     });
+  });
+
+  it("stores the sale date and price when the assignment supplies them", async () => {
+    mockedPropertyFindFirst.mockResolvedValueOnce({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValueOnce({ id: "user_1" } as never);
+    mockedFindFirst.mockResolvedValueOnce(null);
+    mockedOwnershipCreate.mockResolvedValueOnce({ id: "ownership-new" } as never);
+
+    await assignPropertyToClient(ACTOR_A, "user_1", PROPERTY_1, {
+      saleDate: "2026-03-14",
+      salePrice: 425000,
+    });
+
+    expect(mockedOwnershipCreate).toHaveBeenCalledWith({
+      data: {
+        tenantId: TENANT_A,
+        userId: "user_1",
+        propertyId: PROPERTY_1,
+        saleDate: new Date("2026-03-14"),
+        salePrice: 425000,
+      },
+    });
+  });
+
+  it("rejects a sale dated in the future before writing anything", async () => {
+    // A future sale date is always a typo — this records a sale that
+    // happened. Rejected before the tenant lookups so nothing is written.
+    await expect(
+      assignPropertyToClient(ACTOR_A, "user_1", PROPERTY_1, { saleDate: "2999-01-01" }),
+    ).rejects.toThrow(/cannot be in the future/);
+    expect(mockedOwnershipCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-positive sale price", async () => {
+    await expect(
+      assignPropertyToClient(ACTOR_A, "user_1", PROPERTY_1, { salePrice: 0 }),
+    ).rejects.toThrow(/positive, finite number/);
+    expect(mockedOwnershipCreate).not.toHaveBeenCalled();
   });
 
   it("throws without creating anything when the property belongs to a different tenant", async () => {
@@ -174,5 +225,172 @@ describe("assignPropertyToClient", () => {
     await assignPropertyToClient(ACTOR_A, "user_1", PROPERTY_1);
 
     expect(mockedOwnershipCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("getOwnershipsForProperty", () => {
+  it("returns the ownership id, which the read-only portfolio view deliberately omits", async () => {
+    // updateSaleDetails needs a row id: one client can own several
+    // properties, so userId alone does not identify the row to edit.
+    mockedOwnershipFindMany.mockResolvedValueOnce([
+      {
+        id: "ownership-1",
+        userId: "user_1",
+        saleDate: new Date("2026-03-14"),
+        salePrice: "425000.00",
+        user: { email: "maria@example.com", firstName: "Maria", lastName: "Papadopoulos" },
+      },
+    ] as never);
+
+    const rows = await getOwnershipsForProperty(TENANT_A, PROPERTY_1);
+
+    expect(rows).toEqual([
+      {
+        id: "ownership-1",
+        userId: "user_1",
+        clientName: "Maria Papadopoulos",
+        saleDate: "2026-03-14",
+        salePrice: 425000,
+      },
+    ]);
+  });
+
+  it("scopes the query by tenant, which is the only access boundary on the Prisma path", async () => {
+    mockedOwnershipFindMany.mockResolvedValueOnce([] as never);
+
+    await getOwnershipsForProperty(TENANT_A, PROPERTY_1);
+
+    expect(mockedOwnershipFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: TENANT_A, propertyId: PROPERTY_1 } }),
+    );
+  });
+
+  it("falls back to the email when the client has no name synced from Clerk", async () => {
+    mockedOwnershipFindMany.mockResolvedValueOnce([
+      {
+        id: "ownership-2",
+        userId: "user_2",
+        saleDate: null,
+        salePrice: null,
+        user: { email: "nameless@example.com", firstName: null, lastName: null },
+      },
+    ] as never);
+
+    const [row] = await getOwnershipsForProperty(TENANT_A, PROPERTY_1);
+
+    expect(row.clientName).toBe("nameless@example.com");
+    expect(row.saleDate).toBeNull();
+    expect(row.salePrice).toBeNull();
+  });
+});
+
+describe("updateSaleDetails", () => {
+  const EXISTING = {
+    id: "ownership-1",
+    userId: "user_1",
+    propertyId: PROPERTY_1,
+    saleDate: new Date("2026-03-14"),
+    salePrice: "425000.00",
+  };
+
+  it("writes only the fields supplied, so editing the price cannot blank the date", async () => {
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_A, "ownership-1", { salePrice: 450000 });
+
+    expect(mockedOwnershipUpdateMany).toHaveBeenCalledWith({
+      where: { id: "ownership-1", tenantId: TENANT_A },
+      data: { salePrice: 450000 },
+    });
+  });
+
+  it("honours an explicit null as 'clear this', which is what makes a typo correctable", async () => {
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_A, "ownership-1", { saleDate: null, salePrice: null });
+
+    expect(mockedOwnershipUpdateMany).toHaveBeenCalledWith({
+      where: { id: "ownership-1", tenantId: TENANT_A },
+      data: { saleDate: null, salePrice: null },
+    });
+  });
+
+  it("combines the id and tenantId in one atomic where clause, never a bare update()", async () => {
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_B, "ownership-1", { salePrice: 1 });
+
+    // ACTOR_B's tenant is carried into the write itself, not merely checked
+    // beforehand — update()'s where accepts only a unique field and would
+    // drop the tenant filter entirely.
+    expect(mockedOwnershipUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "ownership-1", tenantId: TENANT_B } }),
+    );
+  });
+
+  it("audits a real change, comparing the Decimal price as a number", async () => {
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_A, "ownership-1", { salePrice: 450000 });
+
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          entityType: "PropertyOwnership",
+          entityId: "ownership-1",
+          field: "salePrice",
+          oldValue: "425000",
+          newValue: "450000",
+        }),
+      }),
+    );
+  });
+
+  it("records nothing when the price is re-submitted unchanged", async () => {
+    // Decimal("425000.00") and the number 425000 stringify differently; if
+    // the comparison were done on the raw Decimal this would log a phantom
+    // edit on every save, distorting any later timing analysis.
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_A, "ownership-1", { salePrice: 425000 });
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("returns without touching the database when nothing was supplied", async () => {
+    mockedFindFirst.mockResolvedValueOnce(EXISTING as never);
+
+    await updateSaleDetails(ACTOR_A, "ownership-1", {});
+
+    expect(mockedOwnershipUpdateMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("throws for an ownership in another tenant rather than writing across the boundary", async () => {
+    mockedFindFirst.mockResolvedValueOnce(null);
+
+    await expect(updateSaleDetails(ACTOR_B, "ownership-1", { salePrice: 1 })).rejects.toThrow(
+      /was not found for tenant/,
+    );
+    expect(mockedOwnershipUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unparseable sale date", async () => {
+    await expect(updateSaleDetails(ACTOR_A, "ownership-1", { saleDate: "not-a-date" })).rejects.toThrow(
+      /is not a valid date/,
+    );
+  });
+
+  it("rejects a future sale date before any lookup happens", async () => {
+    await expect(updateSaleDetails(ACTOR_A, "ownership-1", { saleDate: "2999-01-01" })).rejects.toThrow(
+      /cannot be in the future/,
+    );
+    expect(mockedFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative sale price, mirroring the database check constraint", async () => {
+    await expect(updateSaleDetails(ACTOR_A, "ownership-1", { salePrice: -5 })).rejects.toThrow(
+      /positive, finite number/,
+    );
   });
 });

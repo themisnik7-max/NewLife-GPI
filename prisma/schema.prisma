@@ -114,6 +114,29 @@ model User {
   /// correctly means "always process the next update," not "always stale."
   lastSyncedAt DateTime? @map("last_synced_at")
 
+  /// Admin-maintained client profile fields. Deliberately stored here rather
+  /// than in Clerk's `publicMetadata`: the stated goal is that every usable
+  /// datum lives in this database so it can be joined and analysed, and
+  /// metadata on an external identity provider is queryable only one user at
+  /// a time. Name and email are the opposite case — Clerk owns those, they
+  /// arrive by webhook, and duplicating them as editable columns here would
+  /// create two sources of truth that drift.
+  ///
+  /// All nullable with no backfill: every existing client predates these
+  /// columns and there is no correct value to invent for them. `nationality`
+  /// is free text rather than an ISO country code because the admin entering
+  /// it is typing what a passport says, not picking from a list this app
+  /// does not have.
+  phone          String?   @map("phone")
+  nationality    String?   @map("nationality")
+  passportNumber String?   @map("passport_number")
+  dateOfBirth    DateTime? @map("date_of_birth") @db.Date
+  /// Admin-only free text. Never rendered on the client's own pages — see
+  /// getClientProfile()/getOwnClientProfile() in src/lib/data/clients.ts,
+  /// which are two separate functions precisely so this field cannot leak
+  /// into a client-facing view by someone reusing the wrong one.
+  adminNotes     String?   @map("admin_notes")
+
   /// Timestamp of the last organizationMembership.* webhook event that wrote
   /// this row's tenantId/role — deliberately a SEPARATE column from
   /// lastSyncedAt above, not a shared one. lastSyncedAt is driven by the
@@ -159,6 +182,21 @@ model Property {
   /// projects.ts's createProperty/updateProperty) became the first Prisma
   /// write to this column.
   status         String         @default("PLANNING")
+
+  /// Whether this property is part of the lettings inventory.
+  ///
+  /// Added because nothing in this schema could previously answer "which
+  /// properties are we letting?" at all: the ten-stage letting workflow
+  /// (RentalStageRecord) hangs off a *user*, so a property only became
+  /// visible as a rental once someone had already ticked its first stage —
+  /// there was no way to see a unit that is for rent but not yet started.
+  /// An explicit admin-set flag makes the inventory a first-class fact
+  /// rather than something inferred from downstream activity.
+  ///
+  /// Defaults false: a property is for sale unless someone says otherwise,
+  /// which is the correct starting value for every existing row.
+  listedForRental Boolean       @default(false) @map("listed_for_rental")
+
   mapUrl         String         @map("map_url")
   pptUrl         String?        @map("ppt_url")
   createdAt      DateTime       @default(now()) @map("created_at")
@@ -187,6 +225,23 @@ model PropertyOwnership {
   /// (RESERVATION…RENTAL_ACTIVE); the business process it now has to model
   /// is a LETTING workflow with per-stage status, attachments and offer
   /// details, which a scalar cannot express. See RentalStageRecord.
+
+  /// The real commercial facts of the sale, admin-entered.
+  ///
+  /// `createdAt` below is when an admin recorded the ownership *in this
+  /// application*, which for anything sold before the app existed is not the
+  /// date of sale. Keeping them as separate columns means neither has to lie:
+  /// createdAt stays an honest system timestamp, and saleDate is the business
+  /// fact. Both nullable, no backfill — copying createdAt into saleDate would
+  /// manufacture a sale date that nobody verified.
+  ///
+  /// Decimal, not Float, unlike PaymentLedger.amount: that column predates
+  /// this one and is left alone rather than migrated as a side effect, but
+  /// binary floating point is the wrong type for money and new money columns
+  /// in this schema use Decimal (matching RentalStageRecord.offerPrice).
+  saleDate  DateTime? @map("sale_date") @db.Date
+  salePrice Decimal?  @map("sale_price") @db.Decimal(12, 2)
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

@@ -41,6 +41,7 @@ export function PropertyDetailWithEdit({ project, isAdmin }: PropertyDetailWithE
           sqm: String(project.sqm),
           energyClass: project.energyClass,
           status: project.status,
+          listedForRental: project.listedForRental,
           imageUrl: project.imageUrl,
           mapUrl: project.mapUrl,
           pptUrl: project.pptUrl ?? "",

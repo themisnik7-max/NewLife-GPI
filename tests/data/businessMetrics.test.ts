@@ -47,7 +47,13 @@ import {
   getTenantApiKeys,
   revokeTenantApiKey,
 } from "@/lib/data/apiKeys";
-import { createLedgerEntry, getTenantLedger, getUserLedger, recordTenantPayment } from "@/lib/data/ledgers";
+import {
+  createLedgerEntry,
+  getTenantLedger,
+  getTenantPaymentsOverview,
+  getUserLedger,
+  recordTenantPayment,
+} from "@/lib/data/ledgers";
 import { prisma } from "@/lib/prisma";
 
 const mockedFindManyKeys = vi.mocked(prisma.encryptedApiKey.findMany);
@@ -782,3 +788,139 @@ describe("createLedgerEntry", () => {
     expect(result.isDelayed).toBe(true);
   });
 });
+
+describe("getTenantPaymentsOverview", () => {
+  function row(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "ledger-1",
+      propertyId: "property-1",
+      userId: "user_1",
+      amount: 1000,
+      amountPaid: 400,
+      dueDate: new Date("2030-01-01T00:00:00.000Z"),
+      status: "PENDING",
+      isDelayed: false,
+      penaltyAmount: 0,
+      user: { email: "maria@example.com", firstName: "Maria", lastName: "Papadopoulos" },
+      property: { name: "Villa Elytra" },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    mockedFindManyLedger.mockReset();
+  });
+
+  it("joins the client and property so each row is readable on its own", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([row()] as never);
+
+    const { entries } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries[0]).toMatchObject({
+      clientName: "Maria Papadopoulos",
+      clientEmail: "maria@example.com",
+      propertyName: "Villa Elytra",
+      outstanding: 600,
+    });
+  });
+
+  it("scopes to the tenant and pulls the joined rows in one query", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([] as never);
+
+    await getTenantPaymentsOverview(TENANT_A);
+
+    expect(mockedFindManyLedger).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tenantId: TENANT_A } }),
+    );
+  });
+
+  it("sorts overdue installments first, ahead of merely-upcoming ones", async () => {
+    // Sorting purely by due date would bury a two-month-late installment
+    // beneath rows that are not yet due, inverting what this page is for.
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ id: "future", dueDate: new Date("2030-01-01T00:00:00.000Z") }),
+      row({ id: "late", dueDate: new Date("2020-01-01T00:00:00.000Z") }),
+    ] as never);
+
+    const { entries } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["late", "future"]);
+  });
+
+  it("keeps overdue first when the database already returned it first", async () => {
+    // The mirror of the test above. Both directions of the comparator matter:
+    // a one-sided implementation would appear correct against whichever
+    // order the database happened to produce that day.
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ id: "late", dueDate: new Date("2020-01-01T00:00:00.000Z") }),
+      row({ id: "future", dueDate: new Date("2030-01-01T00:00:00.000Z") }),
+    ] as never);
+
+    const { entries } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["late", "future"]);
+  });
+
+  it("orders by due date within each overdue group", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ id: "later", dueDate: new Date("2020-06-01T00:00:00.000Z") }),
+      row({ id: "earlier", dueDate: new Date("2020-01-01T00:00:00.000Z") }),
+    ] as never);
+
+    const { entries } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["earlier", "later"]);
+  });
+
+  it("does not treat a fully-paid past installment as overdue", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ id: "settled", status: "PAID", amountPaid: 1000, dueDate: new Date("2020-01-01T00:00:00.000Z") }),
+    ] as never);
+
+    const { entries, totals } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries[0].isDelayed).toBe(false);
+    expect(totals.overdueCount).toBe(0);
+    expect(entries[0].outstanding).toBe(0);
+  });
+
+  it("totals from the same rows it returns, so the footer always adds up", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ id: "a", amount: 1000, amountPaid: 400 }),
+      row({ id: "b", amount: 500, amountPaid: 500, status: "PAID" }),
+    ] as never);
+
+    const { totals } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(totals).toEqual({ billed: 1500, collected: 900, outstanding: 600, overdueCount: 0 });
+  });
+
+  it("never reports a negative outstanding for an overpaid row", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([row({ amount: 100, amountPaid: 500 })] as never);
+
+    const { entries, totals } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries[0].outstanding).toBe(0);
+    expect(totals.outstanding).toBe(0);
+  });
+
+  it("falls back to the email for a client with no name synced", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([
+      row({ user: { email: "nameless@example.com", firstName: null, lastName: null } }),
+    ] as never);
+
+    const { entries } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries[0].clientName).toBe("nameless@example.com");
+  });
+
+  it("returns zeroed totals for a tenant with no installments", async () => {
+    mockedFindManyLedger.mockResolvedValueOnce([] as never);
+
+    const { entries, totals } = await getTenantPaymentsOverview(TENANT_A);
+
+    expect(entries).toEqual([]);
+    expect(totals).toEqual({ billed: 0, collected: 0, outstanding: 0, overdueCount: 0 });
+  });
+});
+

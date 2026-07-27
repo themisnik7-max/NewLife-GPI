@@ -23,6 +23,13 @@ export interface PropertyFormValues {
   sqm: string;
   energyClass: string;
   status: PropertyStatus;
+  /**
+   * A real boolean, not the string every other field here uses: the others
+   * are text/number inputs whose raw value is a string until submit parses
+   * it, whereas a checkbox is natively boolean and stringifying it would
+   * only create a "false"-is-truthy trap.
+   */
+  listedForRental: boolean;
   imageUrl: string;
   mapUrl: string;
   pptUrl: string;
@@ -40,6 +47,7 @@ const EMPTY_VALUES: PropertyFormValues = {
   sqm: "",
   energyClass: "",
   status: "PLANNING",
+  listedForRental: false,
   imageUrl: "",
   mapUrl: "",
   pptUrl: "",
@@ -63,6 +71,7 @@ export interface PropertyFormSubmitValues {
   sqm: number;
   energyClass: string;
   status: PropertyStatus;
+  listedForRental: boolean;
   imageUrl?: string;
   mapUrl?: string;
   pptUrl?: string | null;
@@ -138,6 +147,7 @@ export function PropertyForm({ initialValues, submitLabel, onSubmit, onCancel }:
           sqm,
           energyClass: values.energyClass,
           status: values.status,
+          listedForRental: values.listedForRental,
           imageUrl: values.imageUrl || undefined,
           mapUrl: values.mapUrl || undefined,
           pptUrl: values.pptUrl || null,
@@ -289,6 +299,24 @@ export function PropertyForm({ initialValues, submitLabel, onSubmit, onCancel }:
             onChange={(e) => setField("pptUrl", e.target.value)}
           />
         </Field>
+        {/* A checkbox, not a second entry in the Status dropdown: build
+            status and lettings inventory are independent facts — a completed
+            property can be for sale, for rent, or both — so they can never
+            be one field. */}
+        <label className="flex items-start gap-2.5 text-sm sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={values.listedForRental}
+            onChange={(e) => setField("listedForRental", e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-stone-300 text-aegean-600 focus:ring-aegean-500"
+          />
+          <span>
+            <span className="font-medium text-stone-700">Listed for rental</span>
+            <span className="block text-xs text-stone-500">
+              Adds this property to the Rentals page so its letting can be tracked.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="flex gap-2 border-t border-stone-100 pt-4">

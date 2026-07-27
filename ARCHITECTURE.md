@@ -30,6 +30,45 @@ Enforcement rules:
 - Every query must be scoped by `tenant_id`, either via application-layer filtering or Supabase Row-Level Security (RLS) policies keyed on `tenant_id`.
 - No cross-tenant query is permitted, including for admin/reporting features — those must aggregate through tenant-scoped views, not raw cross-tenant scans.
 
+## Role scoping: admin is the system of record (2026-07-27)
+
+Tenant isolation above answers "which organization's data is this?". A second,
+independent question runs alongside it: **within one tenant, whose data is
+this?** Every dashboard route now answers both, and the two must not be
+conflated — the admin and a client share a tenant in this deployment, so
+tenant scoping alone would show each of them the other's data.
+
+Every shared route renders a genuinely different screen per role:
+
+| Route | ADMIN sees | TENANT sees |
+|---|---|---|
+| `/dashboard` | Business-wide KPIs (`getTenantMetrics`) | Their own workflow summary |
+| `/dashboard/clients` | The client roster | **404** |
+| `/dashboard/property` | Every property sold, with buyers | Their own unit |
+| `/dashboard/property/[id]` | Buyers, sale date/price, sale editor | **404** |
+| `/dashboard/visa` | Every client's application | Their own timeline |
+| `/dashboard/payments` | Every installment in the tenant | Their own schedule |
+| `/dashboard/rental` | The lettings inventory | Their own ten-stage tracker |
+
+Rules this depends on, all application-level because **Prisma bypasses RLS
+entirely** (see the section below):
+
+- **Two functions, not one function with a flag.** A tenant-wide reader
+  (`getTenantVisaOverview`, `getTenantPaymentsOverview`, `getSoldProperties`)
+  and a per-user reader (`getUserVisaSteps`, `getUserLedger`,
+  `getClientPropertySnapshot`) are separate exports. Collapsing them into one
+  function whose scope depends on an argument is how a page leaks by passing
+  `undefined`.
+- **Admin-only readers cannot check the session themselves** — they take a
+  subject id that is not the caller's. The *page* performs the role check and
+  calls `notFound()`; the data function's doc comment says so explicitly.
+- **404, never "access denied"**, for a non-admin hitting an admin route: a
+  403 confirms the route exists to someone who should not know it does.
+- **`getClientProfile` vs `getOwnClientProfile`.** `users.admin_notes` is
+  readable by the client under RLS's own `users_select` policy (it is their
+  row), so RLS does *not* protect it. Withholding it is entirely the job of
+  these being two functions.
+
 ## Bring Your Own Key (BYOK) Pattern
 
 Users supply and are billed through their own upstream developer account credentials (e.g. their own LLM provider API key), rather than the platform absorbing usage cost.

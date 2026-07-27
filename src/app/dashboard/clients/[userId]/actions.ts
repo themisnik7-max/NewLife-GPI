@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { assignPropertyToClient } from "@/lib/data/propertyOwnership";
 import { createVisaStep, updateVisaStepStatus, type VisaStepEntry } from "@/lib/data/visa";
 import { createLedgerEntry } from "@/lib/data/ledgers";
+import { updateClientProfile, type ClientProfileInput } from "@/lib/data/clients";
 import {
   attachRentalStageFile,
   getRentalStageAttachmentPath,
@@ -41,13 +42,33 @@ function actorFrom(currentUser: { tenantId: string; userId: string }): ActorCont
 
 function revalidateClientViews(userId: string): void {
   revalidatePath(`/dashboard/clients/${userId}`);
+  revalidatePath("/dashboard/clients");
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/rental");
+  // Every write reachable from a client's profile feeds at least one of the
+  // admin roll-ups, which would otherwise serve a cached figure that
+  // contradicts the page the admin just edited.
+  revalidatePath("/dashboard/visa");
+  revalidatePath("/dashboard/payments");
+  revalidatePath("/dashboard/property");
 }
 
 export async function assignPropertyAction(userId: string, propertyId: string): Promise<void> {
   const currentUser = await requireAdmin();
   await assignPropertyToClient(actorFrom(currentUser), userId, propertyId);
+  revalidateClientViews(userId);
+}
+
+/**
+ * Updates the admin-maintained profile fields.
+ *
+ * `userId` names the SUBJECT, never the actor — the actor comes from
+ * actorFrom(currentUser) and is what the audit trail records, so a crafted
+ * request cannot attribute an edit to someone else.
+ */
+export async function updateClientProfileAction(userId: string, input: ClientProfileInput): Promise<void> {
+  const currentUser = await requireAdmin();
+  await updateClientProfile(actorFrom(currentUser), userId, input);
   revalidateClientViews(userId);
 }
 

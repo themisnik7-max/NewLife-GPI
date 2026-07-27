@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
+import { toDisplayName } from "@/lib/clientName";
 import type { PaymentLedger } from "@/generated/prisma/client";
 
 /**
@@ -110,6 +111,84 @@ export async function getUserLedger(tenantId: string, userId: string): Promise<L
   });
 
   return rows.map((row) => toLedgerEntry(row, now));
+}
+
+/**
+ * A tenant-wide installment with enough context to be read on its own.
+ *
+ * `getTenantLedger()` above returns bare ledger rows, which are fine for a
+ * client's own page (where every row belongs to the person reading it) and
+ * unreadable on an admin page: a list of amounts and dates with no indication
+ * of who owes what. Extends rather than replaces it so the existing callers
+ * and their tests are untouched.
+ */
+export interface TenantLedgerEntry extends LedgerEntry {
+  clientName: string;
+  clientEmail: string;
+  propertyName: string;
+  /** amount − amountPaid, never negative. */
+  outstanding: number;
+}
+
+export interface TenantPaymentsOverview {
+  entries: TenantLedgerEntry[];
+  totals: {
+    billed: number;
+    collected: number;
+    outstanding: number;
+    overdueCount: number;
+  };
+}
+
+/**
+ * Every installment in the tenant, with its client and property, plus totals.
+ *
+ * Ordered overdue first, then by due date. Sorting purely by due date would
+ * bury a two-month-late installment beneath rows that are merely upcoming,
+ * which inverts what this page exists to surface.
+ *
+ * Totals are computed from the same rows that are returned, not by a
+ * separate aggregate query: two queries could disagree if a payment lands
+ * between them, and a page whose column of numbers does not add up to its
+ * own footer is worse than a slightly stale one. (getTenantMetrics() in
+ * ./metrics.ts does use aggregates — it returns no rows to disagree with.)
+ */
+export async function getTenantPaymentsOverview(tenantId: string): Promise<TenantPaymentsOverview> {
+  const now = new Date();
+  const rows = await prisma.paymentLedger.findMany({
+    where: { tenantId },
+    orderBy: { dueDate: "asc" },
+    include: {
+      user: { select: { email: true, firstName: true, lastName: true } },
+      property: { select: { name: true } },
+    },
+  });
+
+  const entries = rows
+    .map((row) => {
+      const base = toLedgerEntry(row, now);
+      return {
+        ...base,
+        clientName: toDisplayName(row.user.firstName, row.user.lastName, row.user.email),
+        clientEmail: row.user.email,
+        propertyName: row.property.name,
+        outstanding: Math.max(row.amount - row.amountPaid, 0),
+      };
+    })
+    .sort((a, b) => {
+      if (a.isDelayed !== b.isDelayed) return a.isDelayed ? -1 : 1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+
+  return {
+    entries,
+    totals: {
+      billed: entries.reduce((sum, entry) => sum + entry.amount, 0),
+      collected: entries.reduce((sum, entry) => sum + entry.amountPaid, 0),
+      outstanding: entries.reduce((sum, entry) => sum + entry.outstanding, 0),
+      overdueCount: entries.filter((entry) => entry.isDelayed).length,
+    },
+  };
 }
 
 /**

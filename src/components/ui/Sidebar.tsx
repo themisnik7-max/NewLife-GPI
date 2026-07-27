@@ -9,6 +9,7 @@ import {
   KeyRound,
   User,
   Users,
+  Shield,
   Building2,
   LayoutGrid,
   type LucideIcon,
@@ -22,17 +23,41 @@ export interface SidebarNavItem {
   icon: LucideIcon;
   /** Rendered only when Sidebar is given `isAdmin`. */
   adminOnly?: boolean;
+  /**
+   * Label shown to an admin instead of `label`.
+   *
+   * These pages show genuinely different content per role — a client sees
+   * their own unit, an admin sees every unit sold — so "My Property" is
+   * actively wrong in the admin's sidebar. The nav item is shared because the
+   * route is shared; only the wording differs.
+   */
+  adminLabel?: string;
 }
 
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { key: "overview", label: "Overview", href: "/dashboard", icon: Home },
-  { key: "property", label: "My Property", href: "/dashboard/property", icon: Building2 },
+  { key: "clients", label: "Clients", href: "/dashboard/clients", icon: Users, adminOnly: true },
+  {
+    key: "property",
+    label: "My Property",
+    adminLabel: "Properties Sold",
+    href: "/dashboard/property",
+    icon: Building2,
+  },
   { key: "construction", label: "Construction", href: "/dashboard/construction", icon: HardHat },
   { key: "visa", label: "Golden Visa", href: "/dashboard/visa", icon: Stamp },
-  { key: "payments", label: "Payments & expenses", href: "/dashboard/payments", icon: Wallet },
-  { key: "rental", label: "Rental & taxes", href: "/dashboard/rental", icon: KeyRound },
+  {
+    key: "payments",
+    label: "Payments & expenses",
+    adminLabel: "Payments",
+    href: "/dashboard/payments",
+    icon: Wallet,
+  },
+  { key: "rental", label: "Rental & taxes", adminLabel: "Rentals", href: "/dashboard/rental", icon: KeyRound },
   { key: "projects", label: "Available Projects", href: "/dashboard/projects", icon: LayoutGrid },
-  { key: "team", label: "Team", href: "/dashboard/team", icon: Users, adminOnly: true },
+  // Shield, not Users: Clients now owns the Users icon, and two nav items
+  // with the same glyph is worse than a slightly less literal one.
+  { key: "team", label: "Team", href: "/dashboard/team", icon: Shield, adminOnly: true },
   { key: "profile", label: "Personal info", href: "/settings", icon: User },
 ];
 
@@ -74,7 +99,7 @@ export function Sidebar({ activeKey, client, isAdmin = false }: SidebarProps) {
                 }`}
               >
                 <Icon size={18} aria-hidden="true" />
-                {item.label}
+                {isAdmin && item.adminLabel ? item.adminLabel : item.label}
               </Link>
             </li>
           );

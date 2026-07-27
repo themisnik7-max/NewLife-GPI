@@ -26,6 +26,14 @@ export interface Project {
   energyClass: string;
   imageUrl: string;
   status: PropertyStatus;
+  /**
+   * Whether this unit is part of the lettings inventory (admin-set).
+   *
+   * Distinct from `status`, which describes the *build* (PLANNING →
+   * UNDER_CONSTRUCTION → COMPLETED). A completed property may be for sale,
+   * for rent, or both, so these could never be one field.
+   */
+  listedForRental: boolean;
   mapUrl: string;
   pptUrl: string | null;
 }
@@ -58,6 +66,7 @@ export const MOCK_PROJECTS: Project[] = [
     energyClass: "A",
     imageUrl: buildPlaceholderImageUrl("Aegean Breeze Residences"),
     status: "UNDER_CONSTRUCTION",
+    listedForRental: false,
     mapUrl: buildMapUrl("Naoussa, Paros, Greece"),
     pptUrl:
       "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Faegean-breeze-residences.pptx",
@@ -76,6 +85,7 @@ export const MOCK_PROJECTS: Project[] = [
     energyClass: "A+",
     imageUrl: buildPlaceholderImageUrl("Olive Grove Villas"),
     status: "UNDER_CONSTRUCTION",
+    listedForRental: false,
     mapUrl: buildMapUrl("Rethymno, Crete, Greece"),
     pptUrl:
       "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Folive-grove-villas.pptx",
@@ -94,6 +104,7 @@ export const MOCK_PROJECTS: Project[] = [
     energyClass: "B",
     imageUrl: buildPlaceholderImageUrl("Athens Riviera Lofts"),
     status: "PLANNING",
+    listedForRental: false,
     mapUrl: buildMapUrl("Glyfada, Athens, Greece"),
     pptUrl:
       "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Fathens-riviera-lofts.pptx",
@@ -112,6 +123,7 @@ export const MOCK_PROJECTS: Project[] = [
     energyClass: "A",
     imageUrl: buildPlaceholderImageUrl("Nafplio Heritage Homes"),
     status: "COMPLETED",
+    listedForRental: false,
     mapUrl: buildMapUrl("Nafplio, Peloponnese, Greece"),
     pptUrl:
       "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Fnafplio-heritage-homes.pptx",
@@ -130,6 +142,7 @@ export const MOCK_PROJECTS: Project[] = [
     energyClass: "A",
     imageUrl: buildPlaceholderImageUrl("Santorini Caldera Suites"),
     status: "PLANNING",
+    listedForRental: false,
     mapUrl: buildMapUrl("Oia, Santorini, Greece"),
     pptUrl:
       "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Fsantorini-caldera-suites.pptx",
@@ -151,6 +164,7 @@ export const MOCK_OWNED_PROPERTY: Project = {
   energyClass: "A",
   imageUrl: buildPlaceholderImageUrl("Villa Elytra"),
   status: "UNDER_CONSTRUCTION",
+  listedForRental: false,
   mapUrl: buildMapUrl("Chania, Crete, Greece"),
   pptUrl:
     "https://view.officeapps.live.com/op/embed.aspx?src=https%3A%2F%2Fnewlifegpi.example.com%2Fdecks%2Fvilla-elytra.pptx",

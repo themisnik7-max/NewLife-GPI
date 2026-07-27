@@ -21,6 +21,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     user: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
     },
     constructionMilestone: {
       findMany: vi.fn(),
@@ -39,11 +40,17 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { createMilestone, getPropertyMilestones, updateMilestoneStatus } from "@/lib/data/construction";
-import { createVisaStep, getUserVisaSteps, updateVisaStepStatus } from "@/lib/data/visa";
+import {
+  createVisaStep,
+  getTenantVisaOverview,
+  getUserVisaSteps,
+  updateVisaStepStatus,
+} from "@/lib/data/visa";
 import { prisma } from "@/lib/prisma";
 
 const mockedFindFirstProperty = vi.mocked(prisma.property.findFirst);
 const mockedFindFirstUser = vi.mocked(prisma.user.findFirst);
+const mockedFindManyUsers = vi.mocked(prisma.user.findMany);
 const mockedFindManyMilestones = vi.mocked(prisma.constructionMilestone.findMany);
 const mockedCreateMilestone = vi.mocked(prisma.constructionMilestone.create);
 const mockedUpdateManyMilestones = vi.mocked(prisma.constructionMilestone.updateMany);
@@ -503,3 +510,131 @@ describe("updateVisaStepStatus", () => {
     expect(mockedUpdateManySteps).not.toHaveBeenCalled();
   });
 });
+
+describe("getTenantVisaOverview", () => {
+  function stepRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "step-1",
+      stepOrder: 1,
+      title: "Application submitted",
+      description: null,
+      status: "COMPLETED",
+      completedAt: new Date("2026-04-01T00:00:00.000Z"),
+      ...overrides,
+    };
+  }
+
+  function userRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "user_1",
+      email: "maria@example.com",
+      firstName: "Maria",
+      lastName: "Papadopoulos",
+      visaSteps: [stepRow()],
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    mockedFindManyUsers.mockReset();
+  });
+
+  it("queries every TENANT-role user with their steps in step order", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([] as never);
+
+    await getTenantVisaOverview(TENANT_A);
+
+    expect(mockedFindManyUsers).toHaveBeenCalledWith({
+      where: { tenantId: TENANT_A, role: "TENANT" },
+      include: { visaSteps: { orderBy: { stepOrder: "asc" } } },
+    });
+  });
+
+  it("includes clients who have no steps at all", async () => {
+    // Filtering to `visaSteps: { some: {} }` would hide exactly the clients
+    // a supervisor most needs to see: the ones nobody has started.
+    mockedFindManyUsers.mockResolvedValueOnce([userRow({ visaSteps: [] })] as never);
+
+    const [journey] = await getTenantVisaOverview(TENANT_A);
+
+    expect(journey.steps).toEqual([]);
+    expect(journey.total).toBe(0);
+    expect(journey.completed).toBe(0);
+  });
+
+  it("maps each step through the same mapper the single-client view uses", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([userRow()] as never);
+
+    const [journey] = await getTenantVisaOverview(TENANT_A);
+
+    expect(journey.name).toBe("Maria Papadopoulos");
+    expect(journey.email).toBe("maria@example.com");
+    expect(journey.steps).toEqual([
+      {
+        id: "step-1",
+        stepOrder: 1,
+        title: "Application submitted",
+        description: null,
+        status: "COMPLETED",
+        completedAt: new Date("2026-04-01T00:00:00.000Z").toISOString(),
+      },
+    ]);
+  });
+
+  it("counts only COMPLETED steps toward progress", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([
+      userRow({
+        visaSteps: [
+          stepRow(),
+          stepRow({ id: "step-2", stepOrder: 2, status: "IN_PROGRESS", completedAt: null }),
+          stepRow({ id: "step-3", stepOrder: 3, status: "PENDING", completedAt: null }),
+        ],
+      }),
+    ] as never);
+
+    const [journey] = await getTenantVisaOverview(TENANT_A);
+
+    expect(journey).toMatchObject({ completed: 1, total: 3 });
+  });
+
+  it("sorts fewest completed first, so whoever is furthest behind is at the top", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([
+      userRow({ id: "ahead", visaSteps: [stepRow(), stepRow({ id: "s2", stepOrder: 2 })] }),
+      userRow({ id: "behind", email: "b@example.com", firstName: "Bob", lastName: null, visaSteps: [] }),
+    ] as never);
+
+    const journeys = await getTenantVisaOverview(TENANT_A);
+
+    expect(journeys.map((journey) => journey.userId)).toEqual(["behind", "ahead"]);
+  });
+
+  it("breaks ties on name, so the order is stable rather than whatever the database returns", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([
+      userRow({ id: "z", firstName: "Zoe", lastName: null, visaSteps: [] }),
+      userRow({ id: "a", firstName: "Anna", lastName: null, visaSteps: [] }),
+    ] as never);
+
+    const journeys = await getTenantVisaOverview(TENANT_A);
+
+    expect(journeys.map((journey) => journey.userId)).toEqual(["a", "z"]);
+  });
+
+  it("falls back to the email for a client with no name synced", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([
+      userRow({ firstName: null, lastName: null, visaSteps: [] }),
+    ] as never);
+
+    const [journey] = await getTenantVisaOverview(TENANT_A);
+
+    expect(journey.name).toBe("maria@example.com");
+  });
+
+  it("throws on an unrecognized status rather than mistyping the row", async () => {
+    mockedFindManyUsers.mockResolvedValueOnce([
+      userRow({ visaSteps: [stepRow({ status: "ARCHIVED" })] }),
+    ] as never);
+
+    await expect(getTenantVisaOverview(TENANT_A)).rejects.toThrow(/Unrecognized visa step status/);
+  });
+});
+

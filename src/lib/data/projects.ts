@@ -51,6 +51,7 @@ export function toProject(property: Property): Project {
     energyClass: property.energyClass,
     imageUrl: property.imageUrl,
     status: toFrontendStatus(property.status),
+    listedForRental: property.listedForRental,
     mapUrl: property.mapUrl,
     pptUrl: property.pptUrl,
   };
@@ -113,6 +114,7 @@ export interface PropertyInput {
   energyClass: string;
   imageUrl?: string;
   status?: PropertyStatus;
+  listedForRental?: boolean;
   mapUrl?: string;
   pptUrl?: string | null;
 }
@@ -182,6 +184,7 @@ export async function createProperty(actor: ActorContext, input: PropertyInput):
         energyClass: input.energyClass,
         imageUrl: input.imageUrl || buildPlaceholderImageUrl(input.name),
         status: input.status ?? "PLANNING",
+        listedForRental: input.listedForRental ?? false,
         mapUrl: input.mapUrl || buildMapUrl(input.address),
         pptUrl: input.pptUrl ?? null,
       },
@@ -283,6 +286,7 @@ export async function updateProperty(
   }
   if (input.imageUrl !== undefined) data.imageUrl = input.imageUrl;
   if (input.status !== undefined) data.status = input.status;
+  if (input.listedForRental !== undefined) data.listedForRental = input.listedForRental;
   if (input.mapUrl !== undefined) data.mapUrl = input.mapUrl;
   if (input.pptUrl !== undefined) data.pptUrl = input.pptUrl;
 

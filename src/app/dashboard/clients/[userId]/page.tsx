@@ -4,6 +4,8 @@ import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { ClientOverviewSummary } from "@/components/ui/ClientOverviewSummary";
 import { ClientAdminPanel } from "./ClientAdminPanel";
+import { ClientProfilePanel } from "./ClientProfilePanel";
+import { getClientProfile } from "@/lib/data/clients";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
@@ -45,7 +47,7 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
     notFound();
   }
 
-  const [{ property }, visaSteps, ledgerEntries, notifications, availableProperties, rentalStages] =
+  const [{ property }, visaSteps, ledgerEntries, notifications, availableProperties, rentalStages, profile] =
     await Promise.all([
       getClientPropertySnapshot(currentUser.tenantId, targetUser.id),
       getUserVisaSteps(currentUser.tenantId, targetUser.id),
@@ -53,6 +55,9 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
       getUserNotifications(currentUser.tenantId, currentUser.userId),
       getActiveProjects(currentUser.tenantId),
       getClientRentalStages(currentUser.tenantId, targetUser.id),
+      // getClientProfile(), not getOwnClientProfile(): this is the admin
+      // view, and it is the only one that may include internal notes.
+      getClientProfile(currentUser.tenantId, targetUser.id),
     ]);
   const milestones = property ? await getPropertyMilestones(currentUser.tenantId, property.id) : [];
 
@@ -60,7 +65,7 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activeKey="overview" client={{ property: currentUser.email }} isAdmin />
+      <Sidebar activeKey="clients" client={{ property: currentUser.email }} isAdmin />
       <div className="flex flex-1 flex-col">
         <TopNav
           title={displayName}
@@ -71,9 +76,10 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
           onMarkNotificationRead={markNotificationReadAction}
         />
         <main className="flex-1 space-y-6 bg-stone-50 p-8">
-          <Link href="/dashboard" className="text-sm font-semibold text-aegean-600 hover:underline">
+          <Link href="/dashboard/clients" className="text-sm font-semibold text-aegean-600 hover:underline">
             &larr; Back to all clients
           </Link>
+          {profile && <ClientProfilePanel profile={profile} />}
           <ClientOverviewSummary
             property={property}
             rentalStages={rentalStages}

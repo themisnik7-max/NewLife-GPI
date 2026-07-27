@@ -40,6 +40,42 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("href", "/dashboard/team");
   });
 
+  it("hides the Clients roster from a non-admin", () => {
+    render(<Sidebar activeKey="overview" client={client} />);
+
+    expect(screen.queryByRole("link", { name: "Clients" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Clients roster to an admin", () => {
+    render(<Sidebar activeKey="overview" client={client} isAdmin />);
+
+    expect(screen.getByRole("link", { name: "Clients" })).toHaveAttribute("href", "/dashboard/clients");
+  });
+
+  it("relabels shared routes for an admin, since those pages show different content per role", () => {
+    // Same href, different screen: a client sees their own unit, an admin
+    // sees every unit sold — so "My Property" is actively wrong for them.
+    render(<Sidebar activeKey="overview" client={client} isAdmin />);
+
+    const link = screen.getByRole("link", { name: "Properties Sold" });
+    expect(link).toHaveAttribute("href", "/dashboard/property");
+    expect(screen.queryByRole("link", { name: "My Property" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the client-facing labels when isAdmin is not passed", () => {
+    render(<Sidebar activeKey="overview" client={client} />);
+
+    expect(screen.getByRole("link", { name: "My Property" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Rental & taxes" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Properties Sold" })).not.toBeInTheDocument();
+  });
+
+  it("gives every nav item a distinct icon, so two entries never read as the same thing", () => {
+    // Team used to share the Users glyph that Clients now owns.
+    const icons = SIDEBAR_NAV_ITEMS.map((item) => item.icon);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
   it("marks only the active nav item with aria-current", () => {
     render(<Sidebar activeKey="payments" client={client} />);
 
