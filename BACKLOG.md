@@ -196,24 +196,129 @@ All are stack additions. CLAUDE.md requires explicit approval for each.
 
 ---
 
-## 4. MONDAY BOARD MAPPING — blocked on access
+## 4. MONDAY WORKSPACE — observed structure
 
-The plan in §3 is derived from **monday's public product and support
-documentation**, not from this business's actual monday workspace.
+Recorded from screenshots supplied 2026-07-29 of
+`themisnik7s-team.monday.com`, workspace **CRM**. The URL itself is not
+fetchable (board data loads client-side after authentication), so this is the
+authoritative record of what was seen.
 
-Board `5101203939` at `themisnik7s-team.monday.com` was supplied on
-2026-07-29. It is **not readable** without authentication: fetching the URL
-returns monday's marketing shell, because board data loads client-side after
-login.
+⚠️ **The sample data is monday's CRM template, not this business's records.**
+Deals are "Google deal / Apple deal / Amazon deal"; leads are at Wix and
+Microsoft; contacts are Steven Scott, Sam Jones, Robert Thompson. Nothing
+property-related appears anywhere. So these screenshots evidence **the
+structure Themis wants to work in**, not a configured Golden Visa process.
+Treat board *shapes* as the requirement and board *contents* as placeholder.
 
-To map the plan onto the real board rather than the generic product, one of:
+### 4.1 Boards in the CRM workspace
 
-1. **Board export** (Board menu → Export board to Excel) committed to the repo
-   or shared. Best option — it also becomes the fixture for A3's importer.
-2. **A monday API token** (Admin → API → personal API token), which allows
-   querying `api.monday.com/v2` for the real column types, groups, and
-   automations. Note this is a live credential with workspace-wide read access.
-3. **Screenshots** of the board, its view tabs, and its automation list.
+| Board | Views | Automations | Notable columns |
+|---|---|---|---|
+| Workspace home | — | — | — |
+| **Contacts** | — | — | — |
+| **Deals** | Main table, Sales report, **Pipeline** | 8 | Stage (status), Owner, Deal Value, **Contacts (connected board)**, **Activities timeline**, subitems |
+| **Leads** | Main table, **Lead submission form** | 6 | Status, Owner, Activities timeline, **"Move to Contacts" button**, Company, Title |
+| **Accounts** | — | — | — |
+| **Client Projects** | Main table, **Gantt** | 1 | Priority, **Timeline (date range)**, Status, **Deals (connected)**, **Contact (connected)**, subitems |
+| **Products & Services** | — | — | — |
+| **Activities** | Main table | 1 | Owner, **Activity Type** (Call summary / Meeting), **Start time**, **End time**, Status (Done) |
+| **Sales Dashboard** | — | — | — |
 
-Until then, §3's phases are informed guesses about which monday capabilities
-matter to this business, not a mapping of the ones it actually uses.
+Boards carrying an **Import** button: Deals, Leads. Gmail is connected via
+**Integrate** on Deals, Leads, Activities, Client Projects.
+
+### 4.2 Product areas outside the boards
+
+- **Sidekick** — conversational AI assistant with its own chat history,
+  **Memory**, **Personalization**, and **skills**. Quick actions: Build a
+  sequence, Work my deals, Log a meeting, Explore my pipeline, Create a doc,
+  Create a board, Analyze data. Suggested prompts are deal-centric
+  ("Re-engage stalled deals with a sequence", "Find deals stuck in
+  Negotiation", "Draft a follow-up for a quiet deal", "Bulk close stale
+  deals").
+- **Agents** — a gallery of prebuilt "Revenue Experts": **Pipeline monitor**,
+  **Meeting prep**, **Lead sourcer**, **Outreach caller**, plus New agent.
+- **Tools** — **Sequences** (multi-step email cadences, in beta),
+  **Quotes and Invoices**, **Mass email tracking**.
+- **Notetaker** — its own top-level item in the left rail.
+
+### 4.3 Structural gaps this reveals in NewLife GPI
+
+Things the screenshots show that the earlier plan (§3, written from public
+docs) got wrong or missed entirely:
+
+1. **Leads and Contacts are separate boards**, joined by an explicit
+   "Move to Contacts" button. NewLife GPI collapsed both into one `Contact`
+   model with no lead stage, no `Company`/`Title`, and no conversion step.
+2. **Accounts is a distinct board** — a company layer above contacts.
+   NewLife GPI has no organisation entity at all.
+3. **Subitems** exist on Deals and Client Projects. NewLife GPI has no
+   subitem concept on any record.
+4. **Connected-board columns** are used heavily (Deals→Contacts,
+   Client Projects→Deals and →Contact). NewLife GPI has foreign keys but no
+   generic linked-record UI.
+5. **"Activities timeline" column** renders a per-row strip of recent
+   activity inline in the table — a distinctive monday element with no
+   equivalent here.
+6. **Lead submission form** is a public form view that creates records.
+   NewLife GPI has no form capability.
+7. **Activities carry Start time AND End time** plus an Activity Type
+   vocabulary including "Call summary". NewLife GPI's `Activity` has a single
+   `occurredAt` and no duration.
+8. **Products & Services** is its own board — likely where a property
+   catalogue would live in a monday-shaped model.
+9. **Sequences, Quotes & Invoices, Mass email tracking** are whole product
+   areas with no counterpart here.
+10. **Sidekick is conversational and has memory**; NewLife GPI's AI is a
+    one-shot "Analyse" button with no chat, no history, no memory.
+
+### 4.4 Decisions taken 2026-07-29
+
+Answers from Themis after reviewing the screenshots above.
+
+**D1 — Shape: map monday's mechanics onto the property domain.** Property /
+Ownership / Payments / Visa / Rental stays the spine, because it encodes
+Golden Visa process that monday's generic CRM knows nothing about. The
+missing monday *mechanics* (lead funnel, accounts, subitems, linked records,
+activity strips, board views) get added around it. Not a literal rebuild of
+monday's board set.
+
+**D2 — ⚠️ THE REAL FUNNEL, AND THE SHIPPED STAGES ARE WRONG.** Themis:
+
+> "leads are the people we are in contact, to buy a property. so the
+> conversion is: lead → zoom meeting → athens visit → power of attorney →
+> buyer"
+
+That is a five-step acquisition funnel specific to this business. The stages
+shipped in `src/lib/pipeline.ts` — `NEW_LEAD / QUALIFIED / VIEWING / OFFER /
+RESERVATION / CONTRACT / WON / LOST` — were taken from a generic B2B sales
+template and **describe a process this business does not run.** They must be
+replaced. Consequences:
+
+- `DEAL_STAGES` in `src/lib/pipeline.ts` is rewritten, and with it the
+  probabilities behind the weighted forecast.
+- The `deals.stage` check constraint in `0013_pipeline.sql` needs a follow-up
+  migration; existing demo rows must be remapped, not silently left invalid.
+- "Buyer" is not merely a won deal — it is the point where a Contact becomes
+  a real client: Clerk account linked, `PropertyOwnership` created. The
+  existing conversion machinery (`linkContactToClerkUser`) is the right hook.
+- "Power of attorney" is a **document**, not just a status. It is the
+  strongest argument yet for per-stage document slots, and the mechanism
+  already exists — `RentalStageRecord`'s `slot` design does exactly this.
+
+**D3 — Accounts are needed.** Buyers come through companies and introducers,
+so an Account/Organisation layer is in scope. Contacts and Deals hang off it,
+enabling "revenue by introducer" reporting.
+
+**D4 — Tools deferred.** Quotes & Invoices, Sequences, Mass email tracking
+and Notetaker are all **out of scope for now** ("none for now"). Do not build
+them, and do not add the email or transcription dependencies they would
+require.
+
+### 4.5 Still needed to go further
+
+A **board export to Excel** (Board menu → Export board to Excel) for Deals,
+Leads, and Contacts would give exact column types and the real option sets
+behind each status column — and would double as the test fixture for the
+importer in A3. Screenshots settle structure; they do not settle column
+configuration.
