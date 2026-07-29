@@ -7,6 +7,7 @@ import type {
 } from "@clerk/nextjs/webhooks";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/lib/auth/role";
+import { linkContactToClerkUser } from "@/lib/data/pipeline";
 
 type ClerkEvent = UserWebhookEvent | OrganizationWebhookEvent | OrganizationMembershipWebhookEvent;
 
@@ -295,6 +296,38 @@ export async function POST(req: Request) {
               },
             });
           });
+        }
+
+        // ── Pipeline conversion ────────────────────────────────────────
+        //
+        // The moment a prospect becomes a client. If exactly one unlinked
+        // contact in this user's tenant carries the same email, it is linked
+        // so the calls, viewings and notes recorded before they bought stay
+        // attached to them afterwards instead of being stranded on a record
+        // nobody opens again.
+        //
+        // Deliberately AFTER the user write and outside its transaction, and
+        // deliberately swallowed on failure: linking is an enrichment, not
+        // part of provisioning an account. A contact-matching problem must
+        // never turn a successful user sync into a 500 that Clerk then
+        // retries — the retry would re-run the account write, and the user
+        // would be locked out of an app they just signed up for over a
+        // bookkeeping detail. linkContactToClerkUser() is itself a no-op
+        // when the match is ambiguous, so re-running it is safe.
+        try {
+          const linkTarget = await prisma.user.findUnique({
+            where: { id: clerkId },
+            select: { tenantId: true },
+          });
+          if (linkTarget) {
+            await linkContactToClerkUser(
+              linkTarget.tenantId,
+              primaryEmail.email_address,
+              clerkId,
+            );
+          }
+        } catch (linkErr) {
+          console.error(`Failed to link contact for new user ${clerkId}:`, linkErr);
         }
 
         return NextResponse.json({ received: true });

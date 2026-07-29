@@ -62,6 +62,7 @@ export default async function SoldPropertyPage({ params }: SoldPropertyPageProps
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin
         />
         <main className="flex-1 space-y-6 bg-stone-50 p-8">
           <Link href="/dashboard/property" className="text-sm font-semibold text-aegean-600 hover:underline">

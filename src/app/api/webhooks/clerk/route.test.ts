@@ -32,9 +32,20 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// The route links a newly-created Clerk account to a matching pipeline
+// contact. Mocked rather than exercised through Prisma so the link attempt is
+// directly observable, and so this suite keeps testing the webhook rather
+// than the contact-matching rules (which have their own tests in
+// src/lib/data/pipeline.test.ts).
+vi.mock("@/lib/data/pipeline", () => ({
+  linkContactToClerkUser: vi.fn(),
+}));
+
 import { POST } from "@/app/api/webhooks/clerk/route";
 import { prisma } from "@/lib/prisma";
+import { linkContactToClerkUser } from "@/lib/data/pipeline";
 
+const mockedLinkContact = vi.mocked(linkContactToClerkUser);
 const mockedFindUnique = vi.mocked(prisma.user.findUnique);
 const mockedUpdate = vi.mocked(prisma.user.update);
 const mockedTenantUpsert = vi.mocked(prisma.tenant.upsert);
@@ -133,6 +144,7 @@ describe("POST /api/webhooks/clerk", () => {
     mockedFindUnique.mockReset();
     mockedUpdate.mockReset().mockResolvedValue({} as never);
     mockedTenantUpsert.mockReset().mockResolvedValue({ id: FIXED_TENANT_UUID } as never);
+    mockedLinkContact.mockReset().mockResolvedValue(null);
 
     txTenantCreate = vi.fn().mockResolvedValue({});
     txUserCreate = vi.fn().mockResolvedValue({});
@@ -359,6 +371,59 @@ describe("POST /api/webhooks/clerk", () => {
 
       expect(response.status).toBe(200);
       expect(mockedUpdate).toHaveBeenCalled();
+    });
+
+    describe("pipeline conversion", () => {
+      it("tries to link a matching contact once the account row exists", async () => {
+        // The moment a prospect becomes a client: the calls and viewings
+        // logged before they bought must stay attached to them afterwards.
+        mockedFindUnique
+          .mockResolvedValueOnce(null as never) // the "does this user exist" check
+          .mockResolvedValueOnce({ tenantId: FIXED_TENANT_UUID } as never); // the link lookup
+        verifyMock.mockReturnValueOnce(
+          buildUserEvent({ type: "user.created", id: "user_new", email: "maria@example.com" }),
+        );
+
+        const response = await POST(buildRequest({}));
+
+        expect(response.status).toBe(200);
+        expect(mockedLinkContact).toHaveBeenCalledWith(
+          FIXED_TENANT_UUID,
+          "maria@example.com",
+          "user_new",
+        );
+      });
+
+      it("still returns 200 when linking throws", async () => {
+        // A contact-matching problem must never turn a successful account
+        // sync into a 500. Clerk would retry, re-running the account write,
+        // and the user would be locked out of an app they just signed up for
+        // over a bookkeeping detail.
+        mockedFindUnique
+          .mockResolvedValueOnce(null as never)
+          .mockResolvedValueOnce({ tenantId: FIXED_TENANT_UUID } as never);
+        mockedLinkContact.mockRejectedValueOnce(new Error("contacts table unavailable"));
+        verifyMock.mockReturnValueOnce(buildUserEvent({ type: "user.created", id: "user_new" }));
+
+        const response = await POST(buildRequest({}));
+
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ received: true });
+        expect(consoleErrorSpy).toHaveBeenCalled();
+      });
+
+      it("does not attempt a link for a stale event that wrote nothing", async () => {
+        mockedFindUnique.mockResolvedValueOnce({
+          lastSyncedAt: new Date(BASE_TIME + ONE_HOUR_MS),
+        } as never);
+        verifyMock.mockReturnValueOnce(
+          buildUserEvent({ type: "user.created", id: "user_existing", updatedAt: BASE_TIME }),
+        );
+
+        await POST(buildRequest({}));
+
+        expect(mockedLinkContact).not.toHaveBeenCalled();
+      });
     });
 
     it("skips a stale event when lastSyncedAt is strictly newer than the incoming event", async () => {

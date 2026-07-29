@@ -64,6 +64,12 @@ model Tenant {
   notifications          Notification[]
   auditLogs              AuditLog[]
   rentalStageRecords     RentalStageRecord[]
+  documents              Document[]
+  activities             Activity[]
+  savedViews             SavedView[]
+  contacts               Contact[]
+  deals                  Deal[]
+  automationRules        AutomationRule[]
 
   @@map("tenants")
 }
@@ -576,4 +582,389 @@ model RentalStageRecord {
   @@index([tenantId])
   @@index([userId])
   @@map("rental_stage_records")
+}
+
+/// A stored file (PDF or image) attached to any record in the system — lease
+/// agreements, payment receipts, construction progress photos, passports.
+///
+/// Polymorphic (`entityType` + `entityId` as plain strings) for the same
+/// reason AuditLog is, and with the same accepted tradeoff: a typed relation
+/// would need one nullable FK column per attachable table, and every new
+/// attachable table would then require a migration. See AuditLog's comment.
+///
+/// This does NOT replace RentalStageRecord.attachmentPath. That column models
+/// "the single document that evidences this specific workflow stage" — a
+/// one-to-one slot the stage tracker renders inline, with the stage's own
+/// `slot` deciding which content types are legal. This table models "every
+/// file anyone attached to this record", which is many-to-one and has no
+/// per-slot type rule. Collapsing the two would make the stage tracker query
+/// a list and pick one, which is exactly the ambiguity the slot design
+/// avoids. Both write to the same bucket through src/lib/storage.ts.
+model Document {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+
+  /// Matches a key in the canonical list in src/lib/documents.ts. Not
+  /// constrained by a database check, same reasoning as
+  /// RentalStageRecord.stageKey: the category list is business vocabulary
+  /// and expected to change. Validated in application code on write.
+  category String
+
+  /// Supabase Storage object path in the private bucket — NOT a URL.
+  /// Downloads are served through short-lived signed URLs generated
+  /// server-side, so a leaked path is not a leaked file.
+  storagePath String @map("storage_path")
+  filename    String
+  contentType String @map("content_type")
+  sizeBytes   Int    @map("size_bytes")
+
+  description String?
+
+  /// Whether a non-admin may see this file on their own pages.
+  ///
+  /// Defaults FALSE, and that default is load-bearing. Admins attach files
+  /// to client records that clients must not see (internal valuations, notes
+  /// on a passport scan) alongside ones they should (their signed lease).
+  /// Because Prisma bypasses RLS entirely, nothing below the application
+  /// layer will catch a mistake here — so the safe value is the default and
+  /// sharing is the deliberate act, never the other way round. Enforced by
+  /// getEntityDocuments() vs getClientVisibleDocuments() being two separate
+  /// functions, per the rule in ARCHITECTURE.md.
+  visibleToClient Boolean @default(false) @map("visible_to_client")
+
+  /// Clerk user id of the uploader, always resolved server-side from the
+  /// session — never accepted as a parameter, same rule as tenantId.
+  uploadedByUserId String @map("uploaded_by_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([entityType, entityId])
+  @@map("documents")
+}
+
+/// A human interaction recorded against any record — a call, an email, a
+/// meeting, a note, or a task.
+///
+/// This is the piece the system had no representation for at all. Before it,
+/// the only free-text field anywhere was `users.admin_notes`: one blob per
+/// client, overwritten on every edit, with no author, no timestamp and no
+/// subject. "When did we last speak to this buyer, and what did they say?"
+/// was unanswerable, and unanswerable retroactively — the data was never
+/// written down to begin with.
+///
+/// DELIBERATELY SEPARATE FROM AuditLog, though both are append-ish records
+/// with a polymorphic subject and both are rendered in one merged feed
+/// (getRecordTimeline in src/lib/data/activities.ts). They differ in the one
+/// way that matters: an audit row is written BY the system as the factual,
+/// immutable consequence of a mutation and must never be editable, whereas an
+/// activity is written BY a person, is their fallible account of something
+/// that happened outside the system, and must be correctable. Storing both in
+/// audit_logs would have meant either making audit rows editable — destroying
+/// the guarantee that table exists to provide — or making typos permanent.
+///
+/// Polymorphic on entityType + entityId for the same reason as AuditLog and
+/// Document, with the same accepted tradeoff. See AuditLog's comment.
+model Activity {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+
+  /// CALL | EMAIL | MEETING | NOTE | TASK. String + check, per this schema's
+  /// convention — never a native Postgres enum, for the reason set out at
+  /// length on User.role.
+  type String
+
+  subject String
+  /// The long form. Nullable: "Called, no answer" is a complete activity.
+  body    String?
+
+  /// When the interaction actually happened, which is NOT `createdAt`.
+  ///
+  /// Someone logging Friday's call on Monday morning needs the timeline to
+  /// place it on Friday. Keeping them as separate columns means neither has
+  /// to lie — createdAt stays an honest system timestamp, occurredAt is the
+  /// business fact — exactly the reasoning behind PropertyOwnership.saleDate.
+  ///
+  /// Nullable because a TASK has not happened yet; it has a dueAt instead.
+  occurredAt DateTime? @map("occurred_at")
+
+  /// TASK only: when it is due, and when it was actually done.
+  ///
+  /// Nullable columns on this shared table rather than a separate Task model,
+  /// the same call RentalStageRecord's offer fields make: a task IS an
+  /// activity for every purpose this app has — it appears in the same feed,
+  /// attaches to the same records, and is written by the same composer — and
+  /// a second table would add a model and a union type to every read for two
+  /// columns.
+  dueAt       DateTime? @map("due_at")
+  completedAt DateTime? @map("completed_at")
+
+  /// Clerk user id of the author, always resolved server-side from the
+  /// session — never accepted as a parameter, same rule as tenantId.
+  createdByUserId String @map("created_by_user_id")
+
+  /// Whether the client may see this on their own pages. Same default and
+  /// same reasoning as Document.visibleToClient: an internal note about a
+  /// buyer's negotiating position is the common case, so the safe value is
+  /// the default and sharing is the deliberate act.
+  visibleToClient Boolean @default(false) @map("visible_to_client")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([entityType, entityId])
+  /// Backs the "my open tasks" query, which filters on completion and orders
+  /// by due date across every entity at once.
+  @@index([tenantId, dueAt])
+  @@map("activities")
+}
+
+/// A named, reusable table configuration — "Overdue payments", "Athens units
+/// still available" — as monday's saved board views are.
+///
+/// PER USER, not per tenant, and that is the whole design. Two admins looking
+/// at the same roster want different working sets, and a shared view that one
+/// of them silently re-sorts is worse than no saved views at all. Sharing a
+/// view with a colleague is a feature this deliberately does not have yet;
+/// adding it later means adding a nullable `sharedWithTenant` flag, not
+/// unpicking an ownership model.
+///
+/// `config` is Json rather than a set of typed columns. The shape is defined
+/// and validated in src/lib/views.ts (parseViewConfig), which drops anything
+/// it does not recognise — so a view saved against an older shape of the app
+/// degrades to a partial view rather than breaking the page that loads it.
+/// Typed columns would have made every change to the filter model a
+/// migration, for data that is only ever read back by the one function that
+/// wrote it.
+model SavedView {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Clerk user id of the owner, always resolved server-side from the
+  /// session — never accepted as a parameter, same rule as tenantId.
+  userId String @map("user_id")
+
+  /// Which table this view belongs to, e.g. "clients", "properties".
+  /// A plain string for the same reason Document.category is: the set of
+  /// tables grows as the app does, and a check constraint would make each
+  /// addition a migration.
+  scope String
+
+  name String
+
+  config Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  /// One name per user per table. Saving over an existing name is an update,
+  /// not a second row that shadows the first in a list.
+  @@unique([userId, scope, name])
+  @@index([tenantId])
+  @@index([userId, scope])
+  @@map("saved_views")
+}
+
+// ── Pipeline (pre-sale) ─────────────────────────────────────────────
+//
+// Everything above this line models a client the business ALREADY HAS: their
+// unit, their payments, their visa, their lettings workflow. Nothing modelled
+// the person who has not bought yet, and there was no way to add one — a
+// `User` row is written only by the Clerk webhook handler
+// (src/app/api/webhooks/clerk/route.ts), so a person could not exist in this
+// system until they created an account. The two models below are the missing
+// front half.
+
+/// A person the business is talking to who is not (yet) a signed-up client.
+///
+/// SEPARATE FROM User, DELIBERATELY, and this is the central design decision
+/// of the pipeline. `User.id` IS the Clerk user id — the schema says so and
+/// RLS depends on it — so a User cannot exist before a Clerk account does.
+/// Making prospects Users would have meant either provisioning a Clerk
+/// account for everyone who ever left a phone number, or making `User.id`
+/// nullable and unpicking the identity model the whole application rests on.
+///
+/// The two are joined by `clerkUserId` at the moment of conversion, which is
+/// the honest shape: a contact is a record the business owns, an account is
+/// something the person themselves creates, and the gap between the two is
+/// real rather than a modelling artefact.
+model Contact {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  firstName String  @map("first_name")
+  lastName  String? @map("last_name")
+  email     String?
+  phone     String?
+
+  nationality String?
+
+  /// Where the lead came from — "Referral", "Website", "Portal". Free text,
+  /// not an enum: every business invents its own channels and a check
+  /// constraint would make each new one a migration.
+  source String?
+
+  notes String?
+
+  /// Set when this contact becomes a signed-up client, linking the two
+  /// halves of their history so the calls logged before they bought stay
+  /// attached to them afterwards.
+  ///
+  /// Nullable and NOT unique-per-tenant but globally unique: one Clerk
+  /// account must never be claimed by two contact records, which is exactly
+  /// the duplicate this constraint prevents. No FK to User: the link is set
+  /// by matching email when the webhook fires, and a hard FK would make
+  /// deleting a user destroy the pre-sale history rather than orphan it.
+  clerkUserId String? @unique @map("clerk_user_id")
+
+  /// Which admin owns the relationship. Clerk user id, no FK, for the same
+  /// reason AuditLog.actorUserId has none.
+  ownerUserId String? @map("owner_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  deals  Deal[]
+
+  @@index([tenantId])
+  @@index([tenantId, email])
+  @@map("contacts")
+}
+
+/// One opportunity to sell one thing to one contact.
+///
+/// Separate from Contact because the two genuinely differ in cardinality: a
+/// contact who buys an apartment and later a second unit is one relationship
+/// and two deals, and collapsing them would make the second purchase either
+/// overwrite the first or require a duplicate contact record.
+model Deal {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  contactId String @map("contact_id") @db.Uuid
+
+  /// The unit under discussion, once there is one. Nullable: a deal exists
+  /// from the first conversation, long before a specific unit is chosen, and
+  /// forcing a property at creation would mean inventing one.
+  propertyId String? @map("property_id") @db.Uuid
+
+  title String
+
+  /// Matches a key in the canonical list in src/lib/pipeline.ts. String +
+  /// check, per this schema's convention — see the note on User.role for why
+  /// this is never a native Postgres enum. It DOES carry a check constraint,
+  /// unlike documents.category: the pipeline stages are the spine of the
+  /// board and a typo'd stage would silently create a phantom column.
+  stage String @default("NEW_LEAD")
+
+  /// Expected value. Decimal, not Float — see PropertyOwnership.salePrice on
+  /// why binary floating point is the wrong type for money. Nullable: a lead
+  /// with no number attached is a real and common state, and defaulting to
+  /// zero would drag every forecast down with fictional certainty.
+  value Decimal? @db.Decimal(12, 2)
+
+  expectedCloseDate DateTime? @map("expected_close_date") @db.Date
+
+  /// Set when the deal leaves the board. Both nullable and mutually
+  /// exclusive in practice; the pair is kept rather than one "closedAt" plus
+  /// a status because "when did we win this" and "when did we lose it" are
+  /// asked separately and answering either from a shared column requires
+  /// re-deriving the outcome every time.
+  wonAt      DateTime? @map("won_at")
+  lostAt     DateTime? @map("lost_at")
+  lostReason String?   @map("lost_reason")
+
+  ownerUserId String? @map("owner_user_id")
+
+  /// Position within its stage column, so a manually reordered board keeps
+  /// its order. Float, not Int, specifically so a card dropped between two
+  /// others gets the midpoint of their positions and only ONE row is
+  /// rewritten — integer positions would require renumbering every card
+  /// below the insertion point on every drag.
+  position Float @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, stage])
+  @@index([contactId])
+  @@map("deals")
+}
+
+/// One "when X, do Y" recipe, as monday's automations are.
+///
+/// WHY THIS TABLE EXISTS RATHER THAN HARD-CODED RULES: the conditions a
+/// business wants to watch change constantly ("chase after 7 days" becomes
+/// "after 4 days" the moment a deal is lost), and every such change would
+/// otherwise be a deployment. Storing them makes tuning an admin action.
+///
+/// EVALUATION IS PULL, NOT PUSH. Nothing fires on write. A rule is evaluated
+/// when `runAutomations()` is called — from the admin's own button, or from
+/// an authenticated route handler a scheduler can hit. That is a deliberate
+/// choice over trigger-on-mutation: a rule that fires inside a write
+/// transaction can fail the write it was observing, and time-based
+/// conditions ("nothing has happened for 7 days") have no write to hang off
+/// at all — the interesting moment is precisely when nothing happened.
+///
+/// `lastRunAt` and `lastMatchCount` are stored rather than derived because
+/// the alternative is scanning notifications to guess when a rule last did
+/// something, and a rule that has never matched is indistinguishable from
+/// one that never ran.
+model AutomationRule {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  name String
+
+  /// Matches a key in the canonical list in src/lib/automations.ts.
+  /// String + check — the trigger vocabulary is a closed set the engine must
+  /// know how to evaluate, so an unknown value is a bug rather than business
+  /// vocabulary, and the check catches it at the database.
+  trigger String
+
+  /// The trigger's parameter, e.g. the number of idle days. Nullable: some
+  /// triggers ("a payment is overdue") need no threshold.
+  thresholdDays Int? @map("threshold_days")
+
+  /// NOTIFY | CREATE_TASK. String + check, per this schema's convention.
+  action String
+
+  /// Message template for the notification or task subject. The engine
+  /// substitutes {{subject}} with the affected record's name.
+  messageTemplate String @map("message_template")
+
+  enabled Boolean @default(true)
+
+  lastRunAt      DateTime? @map("last_run_at")
+  lastMatchCount Int?      @map("last_match_count")
+
+  /// Clerk user id of whoever created it, resolved server-side.
+  createdByUserId String @map("created_by_user_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("automation_rules")
 }

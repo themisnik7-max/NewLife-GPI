@@ -12,6 +12,8 @@ import {
   Shield,
   Building2,
   LayoutGrid,
+  Kanban,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { UserButton } from "@clerk/nextjs";
@@ -36,6 +38,10 @@ export interface SidebarNavItem {
 
 export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { key: "overview", label: "Overview", href: "/dashboard", icon: Home },
+  // Sits directly above Clients because that is the order of the business:
+  // a person is a prospect on the pipeline before they are a client on the
+  // roster, and the two pages are the two halves of one relationship.
+  { key: "pipeline", label: "Pipeline", href: "/dashboard/pipeline", icon: Kanban, adminOnly: true },
   { key: "clients", label: "Clients", href: "/dashboard/clients", icon: Users, adminOnly: true },
   {
     key: "property",
@@ -57,6 +63,13 @@ export const SIDEBAR_NAV_ITEMS: SidebarNavItem[] = [
   { key: "projects", label: "Available Projects", href: "/dashboard/projects", icon: LayoutGrid },
   // Shield, not Users: Clients now owns the Users icon, and two nav items
   // with the same glyph is worse than a slightly less literal one.
+  {
+    key: "automations",
+    label: "Automations",
+    href: "/dashboard/automations",
+    icon: Zap,
+    adminOnly: true,
+  },
   { key: "team", label: "Team", href: "/dashboard/team", icon: Shield, adminOnly: true },
   { key: "profile", label: "Personal info", href: "/settings", icon: User },
 ];

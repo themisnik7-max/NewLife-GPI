@@ -6,6 +6,10 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getClientPropertySnapshot } from "@/lib/data/propertyOwnership";
 import { getSoldProperties } from "@/lib/data/portfolio";
 import { getUserNotifications } from "@/lib/data/notifications";
+import { getClientVisibleDocuments } from "@/lib/data/documents";
+import { getClientVisibleTimeline } from "@/lib/data/activities";
+import { DocumentPanel } from "@/components/ui/DocumentPanel";
+import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
@@ -37,6 +41,36 @@ export default async function PropertyPage() {
       : Promise.resolve({ property: null }),
   ]);
 
+  /**
+   * The client's own files, in two parts: those filed against them personally
+   * (their lease, their passport) and those filed against their unit.
+   *
+   * getClientVisibleDocuments() on both, never getEntityDocuments() — this is
+   * the client-facing branch, so anything an admin has not deliberately shared
+   * must not appear. The admin branch of this page intentionally shows no
+   * document panel at all: an admin looking at the whole portfolio has no
+   * single record to attach files to, and the per-property panel already
+   * lives on the property detail page.
+   */
+  const clientDocuments =
+    currentUser && !isAdmin
+      ? (
+          await Promise.all([
+            getClientVisibleDocuments(currentUser.tenantId, "User", currentUser.userId),
+            snapshot.property
+              ? getClientVisibleDocuments(currentUser.tenantId, "Property", snapshot.property.id)
+              : Promise.resolve([]),
+          ])
+        ).flat()
+      : [];
+
+  // Shared activities only, and no system audit rows — see
+  // getClientVisibleTimeline's doc comment on why those are never exposed.
+  const clientTimeline =
+    currentUser && !isAdmin
+      ? await getClientVisibleTimeline(currentUser.tenantId, "User", currentUser.userId)
+      : [];
+
   return (
     <div className="flex min-h-screen">
       <Sidebar activeKey="property" client={{ property: currentUser?.email ?? "" }} isAdmin={isAdmin} />
@@ -48,14 +82,39 @@ export default async function PropertyPage() {
           userInitials={currentUser?.initials ?? ""}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin={isAdmin}
         />
-        <main className="flex-1 bg-stone-50 p-8">
+        <main className="flex-1 space-y-6 bg-stone-50 p-8">
           {isAdmin ? (
             <SoldPropertiesTable properties={soldProperties} />
-          ) : snapshot.property ? (
-            <PropertyAssetCard property={snapshot.property} />
           ) : (
-            <p className="text-sm text-stone-500">No property is currently assigned to your account.</p>
+            <>
+              {snapshot.property ? (
+                <PropertyAssetCard property={snapshot.property} />
+              ) : (
+                <p className="text-sm text-stone-500">
+                  No property is currently assigned to your account.
+                </p>
+              )}
+              {/* Read-only: no canManage, so the panel renders downloads and
+              nothing else. The server re-checks admin role on every mutating
+              action regardless — hiding the controls is usability, not
+              security. entityId is the user's own id because that is the
+              record this panel is anchored to; the property's files were
+              merged into the same list above. */}
+              <DocumentPanel
+                documents={clientDocuments}
+                entityType="User"
+                entityId={currentUser?.userId ?? ""}
+                title="My documents"
+              />
+              <ActivityTimeline
+                entries={clientTimeline}
+                entityType="User"
+                entityId={currentUser?.userId ?? ""}
+                title="Updates from your advisor"
+              />
+            </>
           )}
         </main>
       </div>

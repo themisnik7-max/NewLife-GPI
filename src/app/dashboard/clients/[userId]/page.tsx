@@ -14,6 +14,11 @@ import { getUserVisaSteps } from "@/lib/data/visa";
 import { getUserLedger } from "@/lib/data/ledgers";
 import { getActiveProjects } from "@/lib/data/projects";
 import { getClientRentalStages } from "@/lib/data/rentalStages";
+import { getEntityDocuments } from "@/lib/data/documents";
+import { getRecordTimeline } from "@/lib/data/activities";
+import { DocumentPanel } from "@/components/ui/DocumentPanel";
+import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
+import { InsightPanel } from "@/components/ui/InsightPanel";
 import { isStorageConfigured } from "@/lib/storage";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { prisma } from "@/lib/prisma";
@@ -47,18 +52,35 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
     notFound();
   }
 
-  const [{ property }, visaSteps, ledgerEntries, notifications, availableProperties, rentalStages, profile] =
-    await Promise.all([
-      getClientPropertySnapshot(currentUser.tenantId, targetUser.id),
-      getUserVisaSteps(currentUser.tenantId, targetUser.id),
-      getUserLedger(currentUser.tenantId, targetUser.id),
-      getUserNotifications(currentUser.tenantId, currentUser.userId),
-      getActiveProjects(currentUser.tenantId),
-      getClientRentalStages(currentUser.tenantId, targetUser.id),
-      // getClientProfile(), not getOwnClientProfile(): this is the admin
-      // view, and it is the only one that may include internal notes.
-      getClientProfile(currentUser.tenantId, targetUser.id),
-    ]);
+  const [
+    { property },
+    visaSteps,
+    ledgerEntries,
+    notifications,
+    availableProperties,
+    rentalStages,
+    profile,
+    documents,
+    timeline,
+  ] = await Promise.all([
+    getClientPropertySnapshot(currentUser.tenantId, targetUser.id),
+    getUserVisaSteps(currentUser.tenantId, targetUser.id),
+    getUserLedger(currentUser.tenantId, targetUser.id),
+    getUserNotifications(currentUser.tenantId, currentUser.userId),
+    getActiveProjects(currentUser.tenantId),
+    getClientRentalStages(currentUser.tenantId, targetUser.id),
+    // getClientProfile(), not getOwnClientProfile(): this is the admin
+    // view, and it is the only one that may include internal notes.
+    getClientProfile(currentUser.tenantId, targetUser.id),
+    // getEntityDocuments(), not getClientVisibleDocuments(): same reasoning
+    // as getClientProfile above — this is the admin view, and it is the only
+    // one that may include files not shared with the client. The role check
+    // at the top of this page is what licenses that call.
+    getEntityDocuments(currentUser.tenantId, "User", targetUser.id),
+    // getRecordTimeline(), not getClientVisibleTimeline(): the admin view is
+    // the only one that may include internal notes and system audit rows.
+    getRecordTimeline(currentUser.tenantId, "User", targetUser.id),
+  ]);
   const milestones = property ? await getPropertyMilestones(currentUser.tenantId, property.id) : [];
 
   const displayName = [targetUser.firstName, targetUser.lastName].filter(Boolean).join(" ") || targetUser.email;
@@ -74,18 +96,35 @@ export default async function ClientDetailPage({ params }: ClientDetailPageProps
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin
         />
         <main className="flex-1 space-y-6 bg-stone-50 p-8">
           <Link href="/dashboard/clients" className="text-sm font-semibold text-aegean-600 hover:underline">
             &larr; Back to all clients
           </Link>
           {profile && <ClientProfilePanel profile={profile} />}
+          <InsightPanel mode="client" userId={targetUser.id} />
           <ClientOverviewSummary
             property={property}
             rentalStages={rentalStages}
             milestones={milestones}
             visaSteps={visaSteps}
             ledgerEntries={ledgerEntries}
+          />
+          <ActivityTimeline
+            entries={timeline}
+            entityType="User"
+            entityId={targetUser.id}
+            canManage
+            title="Activity & history"
+          />
+          <DocumentPanel
+            documents={documents}
+            entityType="User"
+            entityId={targetUser.id}
+            canManage
+            storageConfigured={isStorageConfigured()}
+            title="Client files"
           />
           <ClientAdminPanel
             userId={targetUser.id}

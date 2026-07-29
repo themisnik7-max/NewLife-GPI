@@ -48,6 +48,7 @@ export default async function PaymentsPage() {
           userInitials={currentUser?.initials ?? ""}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin={isAdmin}
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           {isAdmin ? (

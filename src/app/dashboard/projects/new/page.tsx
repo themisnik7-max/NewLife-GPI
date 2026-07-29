@@ -32,6 +32,7 @@ export default async function NewPropertyPage() {
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           <Link href="/dashboard/projects" className="text-sm font-semibold text-aegean-600 hover:underline">

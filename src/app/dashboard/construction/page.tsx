@@ -38,6 +38,7 @@ export default async function ConstructionPage() {
           userInitials={currentUser?.initials ?? ""}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin={currentUser?.role === Role.ADMIN}
         />
         <main className="flex-1 bg-stone-50 p-8">
           {milestones.length === 0 ? (
