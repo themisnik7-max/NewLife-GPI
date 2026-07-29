@@ -870,7 +870,13 @@ model Deal {
   /// this is never a native Postgres enum. It DOES carry a check constraint,
   /// unlike documents.category: the pipeline stages are the spine of the
   /// board and a typo'd stage would silently create a phantom column.
-  stage String @default("NEW_LEAD")
+  ///
+  /// The vocabulary is the business's real acquisition funnel — LEAD,
+  /// ZOOM_MEETING, ATHENS_VISIT, POWER_OF_ATTORNEY, BUYER, LOST — replacing
+  /// the generic B2B stages this column shipped with in 0013. See
+  /// 0015_pipeline_real_funnel.sql for the remapping and why OFFER and
+  /// RESERVATION were mapped *back* to ATHENS_VISIT rather than forward.
+  stage String @default("LEAD")
 
   /// Expected value. Decimal, not Float — see PropertyOwnership.salePrice on
   /// why binary floating point is the wrong type for money. Nullable: a lead

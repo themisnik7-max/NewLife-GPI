@@ -10,7 +10,7 @@ import {
   sortSignals,
   type Signal,
 } from "@/lib/ai/signals";
-import { calculateForecast, dealStageLabel, isKnownDealStage } from "@/lib/pipeline";
+import { FIRST_STAGE, calculateForecast, dealStageLabel, isKnownDealStage } from "@/lib/pipeline";
 import { getTenantMetrics } from "@/lib/data/metrics";
 import { getOpenTasks } from "@/lib/data/activities";
 import { isOverdueTask } from "@/lib/activities";
@@ -165,7 +165,7 @@ export async function getPipelineMonitor(tenantId: string): Promise<Insight> {
     title: row.title,
     // Tolerated rather than thrown on: an unknown stage should degrade this
     // panel to "I can't label that one", not break the admin's dashboard.
-    stage: isKnownDealStage(row.stage) ? row.stage : "NEW_LEAD",
+    stage: isKnownDealStage(row.stage) ? row.stage : FIRST_STAGE,
     stageLabel: dealStageLabel(row.stage),
     value: row.value === null ? null : Number(row.value),
     expectedCloseDate: row.expectedCloseDate

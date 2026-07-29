@@ -75,7 +75,7 @@ const CONTACT_ROW = {
 const DEAL_ROW = {
   id: DEAL_1,
   title: "2-bed in Athens",
-  stage: "OFFER",
+  stage: "ATHENS_VISIT",
   value: 250000,
   expectedCloseDate: new Date("2026-09-01T00:00:00Z"),
   wonAt: null,
@@ -185,7 +185,7 @@ describe("getContacts", () => {
     const { where } = mockedDealGroupBy.mock.calls[0][0] as {
       where: { stage: { notIn: string[] } };
     };
-    expect(where.stage.notIn).toEqual(["WON", "LOST"]);
+    expect(where.stage.notIn).toEqual(["BUYER", "LOST"]);
   });
 
   it("reports zero for a contact with no deals", async () => {
@@ -301,7 +301,7 @@ describe("createDeal", () => {
     await createDeal(ACTOR, INPUT);
 
     const { data } = mockedDealCreate.mock.calls[0][0] as { data: { stage: string } };
-    expect(data.stage).toBe("NEW_LEAD");
+    expect(data.stage).toBe("LEAD");
   });
 
   it("places a new card below the last one in its column", async () => {
@@ -325,7 +325,7 @@ describe("createDeal", () => {
 describe("moveDeal", () => {
   beforeEach(() => {
     mockedDealFindFirst.mockResolvedValue({
-      stage: "OFFER",
+      stage: "ATHENS_VISIT",
       position: 1000,
       wonAt: null,
       lostAt: null,
@@ -333,18 +333,18 @@ describe("moveDeal", () => {
   });
 
   it("writes the new stage and position atomically, scoped by tenant", async () => {
-    await moveDeal(ACTOR, DEAL_1, "CONTRACT", 1500);
+    await moveDeal(ACTOR, DEAL_1, "POWER_OF_ATTORNEY", 1500);
 
     expect(mockedDealUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: DEAL_1, tenantId: TENANT_A },
-        data: expect.objectContaining({ stage: "CONTRACT", position: 1500 }),
+        data: expect.objectContaining({ stage: "POWER_OF_ATTORNEY", position: 1500 }),
       }),
     );
   });
 
   it("stamps wonAt on entry to Won", async () => {
-    await moveDeal(ACTOR, DEAL_1, "WON", 1000);
+    await moveDeal(ACTOR, DEAL_1, "BUYER", 1000);
 
     const { data } = mockedDealUpdateMany.mock.calls[0][0] as {
       data: { wonAt: Date | null; lostAt: Date | null };
@@ -356,13 +356,13 @@ describe("moveDeal", () => {
   it("preserves the original win date when a Won card is merely reordered", async () => {
     const originalWin = new Date("2026-06-01T00:00:00Z");
     mockedDealFindFirst.mockResolvedValueOnce({
-      stage: "WON",
+      stage: "BUYER",
       position: 1000,
       wonAt: originalWin,
       lostAt: null,
     } as never);
 
-    await moveDeal(ACTOR, DEAL_1, "WON", 2000);
+    await moveDeal(ACTOR, DEAL_1, "BUYER", 2000);
 
     const { data } = mockedDealUpdateMany.mock.calls[0][0] as { data: { wonAt: Date } };
     expect(data.wonAt).toBe(originalWin);
@@ -371,41 +371,41 @@ describe("moveDeal", () => {
   it("clears the win date when a deal is dragged back onto the board", async () => {
     // A stale wonAt quietly corrupts every "how many did we close in Q3" query.
     mockedDealFindFirst.mockResolvedValueOnce({
-      stage: "WON",
+      stage: "BUYER",
       position: 1000,
       wonAt: new Date("2026-06-01T00:00:00Z"),
       lostAt: null,
     } as never);
 
-    await moveDeal(ACTOR, DEAL_1, "CONTRACT", 1000);
+    await moveDeal(ACTOR, DEAL_1, "POWER_OF_ATTORNEY", 1000);
 
     const { data } = mockedDealUpdateMany.mock.calls[0][0] as { data: { wonAt: Date | null } };
     expect(data.wonAt).toBeNull();
   });
 
   it("audits the stage transition, which is what makes stage duration answerable", async () => {
-    await moveDeal(ACTOR, DEAL_1, "CONTRACT", 1500);
+    await moveDeal(ACTOR, DEAL_1, "POWER_OF_ATTORNEY", 1500);
 
     const audited = mockedAudit.mock.calls.map(
       (call) => (call[0] as { data: { field: string; oldValue: string; newValue: string } }).data,
     );
     expect(audited).toContainEqual(
-      expect.objectContaining({ field: "stage", oldValue: "OFFER", newValue: "CONTRACT" }),
+      expect.objectContaining({ field: "stage", oldValue: "ATHENS_VISIT", newValue: "POWER_OF_ATTORNEY" }),
     );
   });
 
   it("writes no audit row for a pure reorder within the same stage", async () => {
-    await moveDeal(ACTOR, DEAL_1, "OFFER", 1500);
+    await moveDeal(ACTOR, DEAL_1, "ATHENS_VISIT", 1500);
 
     expect(mockedAudit).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown stage, a non-finite position and another tenant's deal", async () => {
     await expect(moveDeal(ACTOR, DEAL_1, "NEGOTIATING" as never, 1)).rejects.toThrow(/Unrecognized/);
-    await expect(moveDeal(ACTOR, DEAL_1, "OFFER", Number.NaN)).rejects.toThrow(/finite/);
+    await expect(moveDeal(ACTOR, DEAL_1, "ATHENS_VISIT", Number.NaN)).rejects.toThrow(/finite/);
 
     mockedDealFindFirst.mockResolvedValueOnce(null as never);
-    await expect(moveDeal(ACTOR, DEAL_1, "OFFER", 1)).rejects.toThrow(/was not found for tenant/);
+    await expect(moveDeal(ACTOR, DEAL_1, "ATHENS_VISIT", 1)).rejects.toThrow(/was not found for tenant/);
   });
 });
 
@@ -434,7 +434,7 @@ describe("updateDeal / deleteDeal", () => {
   });
 
   it("records the title in the audit trail when a deal is deleted", async () => {
-    mockedDealFindFirst.mockResolvedValueOnce({ title: "2-bed in Athens", stage: "OFFER" } as never);
+    mockedDealFindFirst.mockResolvedValueOnce({ title: "2-bed in Athens", stage: "ATHENS_VISIT" } as never);
 
     await deleteDeal(ACTOR, DEAL_1);
 

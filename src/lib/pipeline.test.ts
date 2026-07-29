@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CLOSED_STAGE_KEYS,
   DEAL_STAGES,
+  FIRST_STAGE,
+  LOST_STAGE,
   OPEN_DEAL_STAGES,
+  WON_STAGE,
   buildStageColumns,
   calculateForecast,
   contactFullName,
   dealStageLabel,
+  hasRequiredDocument,
   isClosedStage,
   isKnownDealStage,
   positionForIndex,
+  requiredDocumentFor,
   type DealView,
 } from "@/lib/pipeline";
 
@@ -17,8 +23,8 @@ function makeDeal(overrides: Partial<DealView> = {}): DealView {
   return {
     id: "d1",
     title: "2-bed in Athens",
-    stage: "NEW_LEAD",
-    stageLabel: "New lead",
+    stage: "LEAD",
+    stageLabel: "Lead",
     value: 250000,
     expectedCloseDate: null,
     wonAt: null,
@@ -47,22 +53,22 @@ describe("stage vocabulary", () => {
   });
 
   it("treats exactly WON and LOST as closed", () => {
-    expect(isClosedStage("WON")).toBe(true);
+    expect(isClosedStage("BUYER")).toBe(true);
     expect(isClosedStage("LOST")).toBe(true);
-    expect(isClosedStage("CONTRACT")).toBe(false);
+    expect(isClosedStage("POWER_OF_ATTORNEY")).toBe(false);
     // An unknown stage is not closed — being generous here keeps a deal
     // visible rather than silently vanishing from the board.
     expect(isClosedStage("MYSTERY")).toBe(false);
   });
 
   it("excludes the two terminal stages from the board columns", () => {
-    expect(OPEN_DEAL_STAGES).toHaveLength(6);
-    expect(OPEN_DEAL_STAGES.map((s) => s.key)).not.toContain("WON");
+    expect(OPEN_DEAL_STAGES).toHaveLength(4);
+    expect(OPEN_DEAL_STAGES.map((s) => s.key)).not.toContain("BUYER");
     expect(OPEN_DEAL_STAGES.map((s) => s.key)).not.toContain("LOST");
   });
 
   it("orders stages without gaps or duplicates", () => {
-    expect(DEAL_STAGES.map((s) => s.order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(DEAL_STAGES.map((s) => s.order)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(new Set(DEAL_STAGES.map((s) => s.key)).size).toBe(DEAL_STAGES.length);
   });
 
@@ -76,8 +82,75 @@ describe("stage vocabulary", () => {
   });
 
   it("labels a known stage and falls back to the raw key otherwise", () => {
-    expect(dealStageLabel("NEW_LEAD")).toBe("New lead");
+    expect(dealStageLabel("LEAD")).toBe("Lead");
     expect(dealStageLabel("MYSTERY")).toBe("MYSTERY");
+  });
+
+  it("is the business's real funnel, not a generic sales template", () => {
+    // This list replaced NEW_LEAD/QUALIFIED/VIEWING/OFFER/RESERVATION/
+    // CONTRACT/WON/LOST, which described a process this business does not
+    // run. Pinned here so a future "tidy-up" toward generic CRM vocabulary
+    // fails loudly rather than silently re-breaking every conversion metric.
+    expect(DEAL_STAGES.map((stage) => stage.key)).toEqual([
+      "LEAD",
+      "ZOOM_MEETING",
+      "ATHENS_VISIT",
+      "POWER_OF_ATTORNEY",
+      "BUYER",
+      "LOST",
+    ]);
+  });
+
+  it("names its boundary stages rather than leaving them as literals", () => {
+    expect(FIRST_STAGE).toBe("LEAD");
+    expect(WON_STAGE).toBe("BUYER");
+    expect(LOST_STAGE).toBe("LOST");
+    expect([...CLOSED_STAGE_KEYS].sort()).toEqual(["BUYER", "LOST"]);
+  });
+
+  it("keeps CLOSED_STAGE_KEYS in step with the stage list", () => {
+    // A query meaning "open deals" filters on this constant; if it ever
+    // disagreed with isClosed, those queries would silently include or drop
+    // a whole stage.
+    const closedByFlag = DEAL_STAGES.filter((stage) => stage.isClosed).map((s) => s.key);
+    expect([...CLOSED_STAGE_KEYS].sort()).toEqual(closedByFlag.sort());
+  });
+});
+
+describe("stage document requirements", () => {
+  it("requires a notarised POA at the power-of-attorney stage", () => {
+    // The funnel's fourth step is not a status someone ticks — it is an
+    // instrument that either exists or does not.
+    expect(requiredDocumentFor("POWER_OF_ATTORNEY")).toBe("POWER_OF_ATTORNEY");
+  });
+
+  it("requires a signed contract to call someone a buyer", () => {
+    expect(requiredDocumentFor("BUYER")).toBe("SALE_CONTRACT");
+  });
+
+  it("requires nothing at the early stages, or for an unknown one", () => {
+    expect(requiredDocumentFor("LEAD")).toBeNull();
+    expect(requiredDocumentFor("ZOOM_MEETING")).toBeNull();
+    expect(requiredDocumentFor("ATHENS_VISIT")).toBeNull();
+    expect(requiredDocumentFor("MYSTERY")).toBeNull();
+  });
+
+  it("passes a stage that needs nothing, whatever is on file", () => {
+    // Callers use this uniformly without first asking whether the question
+    // applies to the stage they are looking at.
+    expect(hasRequiredDocument("LEAD", [])).toBe(true);
+  });
+
+  it("detects the discrepancy when a stage's paperwork is absent", () => {
+    expect(hasRequiredDocument("POWER_OF_ATTORNEY", [])).toBe(false);
+    expect(hasRequiredDocument("POWER_OF_ATTORNEY", ["IDENTITY"])).toBe(false);
+    expect(hasRequiredDocument("POWER_OF_ATTORNEY", ["POWER_OF_ATTORNEY"])).toBe(true);
+  });
+
+  it("is satisfied when the right document sits among others", () => {
+    expect(
+      hasRequiredDocument("BUYER", ["IDENTITY", "SALE_CONTRACT", "PAYMENT_RECEIPT"]),
+    ).toBe(true);
   });
 });
 
@@ -90,33 +163,33 @@ describe("contactFullName", () => {
 
 describe("buildStageColumns", () => {
   it("renders every open stage as a column even when empty", () => {
-    // An empty "Offer" column is information, and it is also where a card
+    // An empty "Athens visit" column is information, and it is also where a card
     // has to be droppable.
     const columns = buildStageColumns([]);
 
-    expect(columns).toHaveLength(6);
+    expect(columns).toHaveLength(4);
     expect(columns.every((column) => column.deals.length === 0)).toBe(true);
   });
 
   it("puts each deal in its own stage, ordered by position", () => {
     const columns = buildStageColumns([
-      makeDeal({ id: "b", stage: "OFFER", position: 2000 }),
-      makeDeal({ id: "a", stage: "OFFER", position: 1000 }),
-      makeDeal({ id: "c", stage: "VIEWING" }),
+      makeDeal({ id: "b", stage: "ATHENS_VISIT", position: 2000 }),
+      makeDeal({ id: "a", stage: "ATHENS_VISIT", position: 1000 }),
+      makeDeal({ id: "c", stage: "ZOOM_MEETING" }),
     ]);
 
-    const offer = columns.find((column) => column.stage.key === "OFFER")!;
-    expect(offer.deals.map((deal) => deal.id)).toEqual(["a", "b"]);
-    expect(columns.find((column) => column.stage.key === "VIEWING")!.deals).toHaveLength(1);
+    const visit = columns.find((column) => column.stage.key === "ATHENS_VISIT")!;
+    expect(visit.deals.map((deal) => deal.id)).toEqual(["a", "b"]);
+    expect(columns.find((column) => column.stage.key === "ZOOM_MEETING")!.deals).toHaveLength(1);
   });
 
   it("totals known values and reports how many are missing, rather than hiding the gap", () => {
     const columns = buildStageColumns([
-      makeDeal({ id: "a", stage: "OFFER", value: 100000 }),
-      makeDeal({ id: "b", stage: "OFFER", value: null }),
+      makeDeal({ id: "a", stage: "ATHENS_VISIT", value: 100000 }),
+      makeDeal({ id: "b", stage: "ATHENS_VISIT", value: null }),
     ]);
 
-    const offer = columns.find((column) => column.stage.key === "OFFER")!;
+    const offer = columns.find((column) => column.stage.key === "ATHENS_VISIT")!;
     // A total that quietly excludes an unpriced deal is a number that lies by
     // omission — the count travels with it so the UI can say so.
     expect(offer.total).toBe(100000);
@@ -125,7 +198,7 @@ describe("buildStageColumns", () => {
 
   it("leaves closed deals off the board", () => {
     const columns = buildStageColumns([
-      makeDeal({ id: "w", stage: "WON" }),
+      makeDeal({ id: "w", stage: "BUYER" }),
       makeDeal({ id: "l", stage: "LOST" }),
     ]);
 
@@ -136,19 +209,19 @@ describe("buildStageColumns", () => {
 describe("calculateForecast", () => {
   it("sums open value and weights it by stage probability", () => {
     const forecast = calculateForecast([
-      makeDeal({ id: "a", stage: "NEW_LEAD", value: 100000 }), // ×0.1
-      makeDeal({ id: "b", stage: "CONTRACT", value: 200000 }), // ×0.9
+      makeDeal({ id: "a", stage: "LEAD", value: 100000 }), // ×0.1
+      makeDeal({ id: "b", stage: "POWER_OF_ATTORNEY", value: 200000 }), // ×0.85
     ]);
 
     expect(forecast.openValue).toBe(300000);
-    expect(forecast.weightedValue).toBeCloseTo(100000 * 0.1 + 200000 * 0.9);
+    expect(forecast.weightedValue).toBeCloseTo(100000 * 0.1 + 200000 * 0.85);
     expect(forecast.openCount).toBe(2);
   });
 
   it("excludes closed deals from the open figures and counts them separately", () => {
     const forecast = calculateForecast([
-      makeDeal({ id: "a", stage: "OFFER", value: 100000 }),
-      makeDeal({ id: "w", stage: "WON", value: 500000 }),
+      makeDeal({ id: "a", stage: "ATHENS_VISIT", value: 100000 }),
+      makeDeal({ id: "w", stage: "BUYER", value: 500000 }),
       makeDeal({ id: "l", stage: "LOST", value: 300000 }),
     ]);
 
@@ -160,8 +233,8 @@ describe("calculateForecast", () => {
 
   it("reports unpriced open deals rather than treating them as zero silently", () => {
     const forecast = calculateForecast([
-      makeDeal({ id: "a", stage: "OFFER", value: null }),
-      makeDeal({ id: "b", stage: "OFFER", value: 50000 }),
+      makeDeal({ id: "a", stage: "ATHENS_VISIT", value: null }),
+      makeDeal({ id: "b", stage: "ATHENS_VISIT", value: 50000 }),
     ]);
 
     expect(forecast.openValue).toBe(50000);

@@ -29,8 +29,8 @@ function makeDeal(overrides: Partial<DealView> = {}): DealView {
   return {
     id: "d1",
     title: "2-bed in Athens",
-    stage: "NEW_LEAD",
-    stageLabel: "New lead",
+    stage: "LEAD",
+    stageLabel: "Lead",
     value: 250000,
     expectedCloseDate: null,
     wonAt: null,
@@ -92,30 +92,30 @@ beforeEach(() => {
 });
 
 describe("board layout", () => {
-  it("renders all six open stages, including empty ones", () => {
-    // An empty "Offer" column is information, and it is also where a card
+  it("renders all four open stages, including empty ones", () => {
+    // An empty "Athens visit" column is information, and it is also where a card
     // has to be droppable.
     renderBoard([]);
 
-    for (const label of ["New lead", "Qualified", "Viewing", "Offer", "Reservation", "Contract"]) {
+    for (const label of ["Lead", "Zoom meeting", "Athens visit", "Power of attorney"]) {
       expect(screen.getByRole("heading", { name: new RegExp(label) })).toBeInTheDocument();
     }
   });
 
-  it("keeps Won and Lost off the board", () => {
+  it("keeps Buyer and Lost off the board", () => {
     renderBoard([]);
 
-    expect(screen.queryByRole("heading", { name: /^Won/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Buyer/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^Lost/ })).not.toBeInTheDocument();
   });
 
   it("puts each deal under its own stage", () => {
-    renderBoard([makeDeal({ id: "a", stage: "OFFER", title: "Offer deal" })]);
+    renderBoard([makeDeal({ id: "a", stage: "ATHENS_VISIT", title: "Offer deal" })]);
 
-    const offerColumn = screen
-      .getByRole("heading", { name: /Offer/ })
+    const visitColumn = screen
+      .getByRole("heading", { name: /Athens visit/ })
       .closest("div")!.parentElement!;
-    expect(within(offerColumn).getByText("Offer deal")).toBeInTheDocument();
+    expect(within(visitColumn).getByText("Offer deal")).toBeInTheDocument();
   });
 
   it("says a deal has no value rather than showing €0", () => {
@@ -130,8 +130,8 @@ describe("board layout", () => {
 describe("forecast tiles", () => {
   it("weights open value by stage probability", () => {
     renderBoard([
-      makeDeal({ id: "a", stage: "NEW_LEAD", value: 100000 }),
-      makeDeal({ id: "b", stage: "CONTRACT", value: 200000 }),
+      makeDeal({ id: "a", stage: "LEAD", value: 100000 }),
+      makeDeal({ id: "b", stage: "POWER_OF_ATTORNEY", value: 200000 }),
     ]);
 
     expect(screen.getByText("Weighted forecast")).toBeInTheDocument();
@@ -156,14 +156,14 @@ describe("forecast tiles", () => {
 
 describe("dragging a deal", () => {
   it("moves the card and tells the server", async () => {
-    renderBoard([makeDeal({ id: "d1", stage: "NEW_LEAD" })]);
+    renderBoard([makeDeal({ id: "d1", stage: "LEAD" })]);
 
-    dragCardTo("2-bed in Athens", /Offer/, "d1");
+    dragCardTo("2-bed in Athens", /Athens visit/, "d1");
 
     await waitFor(() => expect(mockedMove).toHaveBeenCalledTimes(1));
     const [dealId, stage, position] = mockedMove.mock.calls[0];
     expect(dealId).toBe("d1");
-    expect(stage).toBe("OFFER");
+    expect(stage).toBe("ATHENS_VISIT");
     expect(Number.isFinite(position)).toBe(true);
   });
 
@@ -173,31 +173,31 @@ describe("dragging a deal", () => {
     mockedMove.mockImplementationOnce(
       () => new Promise<void>((resolve) => { resolveMove = resolve; }),
     );
-    renderBoard([makeDeal({ id: "d1", stage: "NEW_LEAD" })]);
+    renderBoard([makeDeal({ id: "d1", stage: "LEAD" })]);
 
-    dragCardTo("2-bed in Athens", /Offer/, "d1");
+    dragCardTo("2-bed in Athens", /Athens visit/, "d1");
 
-    const offerColumn = screen.getByRole("heading", { name: /Offer/ }).closest("div")!.parentElement!;
-    await waitFor(() => expect(within(offerColumn).getByText("2-bed in Athens")).toBeInTheDocument());
+    const visitColumn = screen.getByRole("heading", { name: /Athens visit/ }).closest("div")!.parentElement!;
+    await waitFor(() => expect(within(visitColumn).getByText("2-bed in Athens")).toBeInTheDocument());
 
     resolveMove();
   });
 
   it("puts the card back and explains when the server rejects the move", async () => {
     mockedMove.mockRejectedValueOnce(new Error("Unrecognized deal stage."));
-    renderBoard([makeDeal({ id: "d1", stage: "NEW_LEAD" })]);
+    renderBoard([makeDeal({ id: "d1", stage: "LEAD" })]);
 
-    dragCardTo("2-bed in Athens", /Offer/, "d1");
+    dragCardTo("2-bed in Athens", /Athens visit/, "d1");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/Unrecognized deal stage/);
-    const leadColumn = screen.getByRole("heading", { name: /New lead/ }).closest("div")!.parentElement!;
+    const leadColumn = screen.getByRole("heading", { name: /Lead/ }).closest("div")!.parentElement!;
     await waitFor(() => expect(within(leadColumn).getByText("2-bed in Athens")).toBeInTheDocument());
   });
 
   it("does nothing when a card is dropped back into its own column", async () => {
-    renderBoard([makeDeal({ id: "d1", stage: "NEW_LEAD" })]);
+    renderBoard([makeDeal({ id: "d1", stage: "LEAD" })]);
 
-    dragCardTo("2-bed in Athens", /New lead/, "d1");
+    dragCardTo("2-bed in Athens", /Lead/, "d1");
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(mockedMove).not.toHaveBeenCalled();
@@ -216,15 +216,15 @@ describe("adding a deal", () => {
     const user = userEvent.setup();
     renderBoard([]);
 
-    const offerColumn = screen.getByRole("heading", { name: /Offer/ }).closest("div")!.parentElement!;
-    await user.click(within(offerColumn).getByRole("button", { name: /Add deal/ }));
-    await user.type(within(offerColumn).getByLabelText("Deal title"), "New opportunity");
-    await user.selectOptions(within(offerColumn).getByLabelText("Contact"), "c1");
-    await user.click(within(offerColumn).getByRole("button", { name: "Add deal" }));
+    const visitColumn = screen.getByRole("heading", { name: /Athens visit/ }).closest("div")!.parentElement!;
+    await user.click(within(visitColumn).getByRole("button", { name: /Add deal/ }));
+    await user.type(within(visitColumn).getByLabelText("Deal title"), "New opportunity");
+    await user.selectOptions(within(visitColumn).getByLabelText("Contact"), "c1");
+    await user.click(within(visitColumn).getByRole("button", { name: "Add deal" }));
 
     await waitFor(() =>
       expect(mockedCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "New opportunity", contactId: "c1", stage: "OFFER" }),
+        expect.objectContaining({ title: "New opportunity", contactId: "c1", stage: "ATHENS_VISIT" }),
       ),
     );
   });
@@ -234,7 +234,7 @@ describe("adding a deal", () => {
     mockedCreate.mockRejectedValueOnce(new Error("A deal needs a title."));
     renderBoard([]);
 
-    const column = screen.getByRole("heading", { name: /New lead/ }).closest("div")!.parentElement!;
+    const column = screen.getByRole("heading", { name: /Lead/ }).closest("div")!.parentElement!;
     await user.click(within(column).getByRole("button", { name: /Add deal/ }));
     await user.type(within(column).getByLabelText("Deal title"), "x");
     await user.selectOptions(within(column).getByLabelText("Contact"), "c1");
@@ -248,7 +248,7 @@ describe("closed deals", () => {
   it("lists them below the board rather than as an ever-growing column", () => {
     // A Won column would grow forever and push the live stages off-screen.
     renderBoard([
-      makeDeal({ id: "w", stage: "WON", title: "Closed win", value: 300000 }),
+      makeDeal({ id: "w", stage: "BUYER", title: "Closed win", value: 300000 }),
       makeDeal({ id: "l", stage: "LOST", title: "Closed loss", lostReason: "Chose another agent" }),
     ]);
 

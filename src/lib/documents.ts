@@ -14,7 +14,8 @@ export type DocumentEntityType =
   | "Property"
   | "User"
   | "PaymentLedger"
-  | "ConstructionMilestone";
+  | "ConstructionMilestone"
+  | "Deal";
 
 export interface DocumentCategoryDefinition {
   key: string;
@@ -44,7 +45,7 @@ export const DOCUMENT_CATEGORIES: ReadonlyArray<DocumentCategoryDefinition> = [
     key: "SALE_CONTRACT",
     label: "Sale contract",
     hint: "SPA, reservation forms, notarial deeds",
-    entityTypes: ["Property", "User"],
+    entityTypes: ["Property", "User", "Deal"],
   },
   {
     key: "PAYMENT_RECEIPT",
@@ -71,6 +72,16 @@ export const DOCUMENT_CATEGORIES: ReadonlyArray<DocumentCategoryDefinition> = [
     entityTypes: ["Property", "ConstructionMilestone"],
   },
   {
+    key: "POWER_OF_ATTORNEY",
+    label: "Power of attorney",
+    hint: "Notarised POA authorising purchase on the buyer's behalf",
+    // Filed against the person who granted it, and against the deal it
+    // enables. It is the document that gates the POWER_OF_ATTORNEY stage in
+    // src/lib/pipeline.ts — the funnel's fourth step is not a status someone
+    // ticks, it is a notarised instrument that either exists or does not.
+    entityTypes: ["User", "Deal"],
+  },
+  {
     key: "IDENTITY",
     label: "Identity document",
     hint: "Passport, tax number, proof of address",
@@ -86,7 +97,7 @@ export const DOCUMENT_CATEGORIES: ReadonlyArray<DocumentCategoryDefinition> = [
     key: "OTHER",
     label: "Other",
     hint: "Anything that does not fit the categories above",
-    entityTypes: ["Property", "User", "PaymentLedger", "ConstructionMilestone"],
+    entityTypes: ["Property", "User", "PaymentLedger", "ConstructionMilestone", "Deal"],
   },
 ];
 

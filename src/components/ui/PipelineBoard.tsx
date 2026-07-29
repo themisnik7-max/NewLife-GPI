@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Building2, CalendarDays, Plus, Trash2, TrendingUp, UserCheck } from "lucide-react";
 import {
+  WON_STAGE,
+  isClosedStage,
   DEAL_STAGES,
   OPEN_DEAL_STAGES,
   buildStageColumns,
@@ -406,7 +408,7 @@ function ForecastTile({
  * closed by mistake — via the record, not the board.
  */
 function ClosedSummary({ deals }: { deals: DealView[] }) {
-  const closed = deals.filter((deal) => deal.stage === "WON" || deal.stage === "LOST");
+  const closed = deals.filter((deal) => isClosedStage(deal.stage));
   if (closed.length === 0) return null;
 
   const stageLabels = new Map(DEAL_STAGES.map((stage) => [stage.key, stage.label]));
@@ -424,7 +426,7 @@ function ClosedSummary({ deals }: { deals: DealView[] }) {
           <li key={deal.id} className="flex flex-wrap items-center gap-3 py-2">
             <span
               className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                deal.stage === "WON" ? "bg-green-50 text-green-700" : "bg-stone-100 text-stone-500"
+                deal.stage === WON_STAGE ? "bg-green-50 text-green-700" : "bg-stone-100 text-stone-500"
               }`}
             >
               {stageLabels.get(deal.stage)}

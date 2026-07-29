@@ -14,6 +14,8 @@
 // works when no API key is configured: the signals render, only the prose is
 // missing.
 
+import { isClosedStage } from "@/lib/pipeline";
+
 export type SignalSeverity = "critical" | "warning" | "info";
 
 export interface Signal {
@@ -70,7 +72,7 @@ export function detectStalledDeals(
   const signals: Signal[] = [];
 
   for (const deal of deals) {
-    if (deal.stage === "WON" || deal.stage === "LOST") continue;
+    if (isClosedStage(deal.stage)) continue;
 
     const idleDays = daysBetween(deal.updatedAt, now);
     if (idleDays >= STALL_THRESHOLD_DAYS) {

@@ -34,6 +34,7 @@ import {
   setRuleEnabled,
 } from "@/lib/data/automations";
 import { createActivity } from "@/lib/data/activities";
+import { CLOSED_STAGE_KEYS } from "@/lib/pipeline";
 import { prisma } from "@/lib/prisma";
 
 const mockedRuleFindMany = vi.mocked(prisma.automationRule.findMany);
@@ -191,7 +192,9 @@ describe("the engine", () => {
     const { where } = mockedDealFindMany.mock.calls[0][0] as {
       where: { stage: { notIn: string[] } };
     };
-    expect(where.stage.notIn).toEqual(["WON", "LOST"]);
+    // Asserted against the exported constant rather than string literals, so
+    // renaming a terminal stage cannot leave this query silently stale.
+    expect(where.stage.notIn).toEqual([...CLOSED_STAGE_KEYS]);
   });
 
   it("suppresses a repeat nudge about the same subject", async () => {

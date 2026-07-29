@@ -2,6 +2,10 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { AuditAction, recordAuditEvent, recordFieldChanges, type ActorContext } from "@/lib/data/audit";
 import {
+  CLOSED_STAGE_KEYS,
+  FIRST_STAGE,
+  LOST_STAGE,
+  WON_STAGE,
   contactFullName,
   dealStageLabel,
   isKnownDealStage,
@@ -213,7 +217,7 @@ export async function getContacts(tenantId: string): Promise<ContactView[]> {
     }),
     prisma.deal.groupBy({
       by: ["contactId"],
-      where: { tenantId, stage: { notIn: ["WON", "LOST"] } },
+      where: { tenantId, stage: { notIn: [...CLOSED_STAGE_KEYS] } },
       _count: { _all: true },
     }),
   ]);
@@ -233,7 +237,7 @@ export async function getContact(tenantId: string, contactId: string): Promise<C
   if (!row) return null;
 
   const openDealCount = await prisma.deal.count({
-    where: { tenantId, contactId, stage: { notIn: ["WON", "LOST"] } },
+    where: { tenantId, contactId, stage: { notIn: [...CLOSED_STAGE_KEYS] } },
   });
 
   return toContactView(row, openDealCount);
@@ -395,7 +399,7 @@ export async function createDeal(actor: ActorContext, input: CreateDealInput): P
     }
   }
 
-  const stage = input.stage ?? "NEW_LEAD";
+  const stage = input.stage ?? FIRST_STAGE;
   if (!isKnownDealStage(stage)) {
     throw new Error(`Unrecognized deal stage: ${stage}`);
   }
@@ -498,8 +502,8 @@ export async function moveDeal(
     const now = new Date();
     // Re-stamped only on entry, preserved while it stays there: dropping a
     // Won card one slot higher must not rewrite the date it was won.
-    const wonAt = stage === "WON" ? (existing.wonAt ?? now) : null;
-    const lostAt = stage === "LOST" ? (existing.lostAt ?? now) : null;
+    const wonAt = stage === WON_STAGE ? (existing.wonAt ?? now) : null;
+    const lostAt = stage === LOST_STAGE ? (existing.lostAt ?? now) : null;
 
     await tx.deal.updateMany({
       where: { id: dealId, tenantId: actor.tenantId },

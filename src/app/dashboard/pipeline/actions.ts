@@ -11,7 +11,7 @@ import {
   updateContact,
   updateDeal,
 } from "@/lib/data/pipeline";
-import { isKnownDealStage, type DealStageKey } from "@/lib/pipeline";
+import { FIRST_STAGE, isKnownDealStage, type DealStageKey } from "@/lib/pipeline";
 import type { ActorContext } from "@/lib/data/audit";
 
 /**
@@ -107,7 +107,7 @@ export interface CreateDealActionInput {
 export async function createDealAction(input: CreateDealActionInput): Promise<void> {
   const currentUser = await requireAdmin();
 
-  const stage = input.stage ?? "NEW_LEAD";
+  const stage = input.stage ?? FIRST_STAGE;
   if (!isKnownDealStage(stage)) {
     throw new Error(`Unrecognized deal stage: ${stage}`);
   }

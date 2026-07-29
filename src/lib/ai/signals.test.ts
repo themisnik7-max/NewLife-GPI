@@ -23,8 +23,8 @@ function makeDeal(overrides: Partial<DealSignalInput> = {}): DealSignalInput {
   return {
     id: "d1",
     title: "2-bed in Athens",
-    stage: "OFFER",
-    stageLabel: "Offer",
+    stage: "ATHENS_VISIT",
+    stageLabel: "Athens visit",
     value: 250000,
     expectedCloseDate: null,
     updatedAt: daysAgo(1),
@@ -52,7 +52,7 @@ describe("detectStalledDeals", () => {
     expect(signal.kind).toBe("deal_stalled");
     // The specific numbers are computed here, not by the model.
     expect(signal.message).toContain("20 days");
-    expect(signal.message).toContain("Offer");
+    expect(signal.message).toContain("Athens visit");
   });
 
   it("does not flag a deal touched recently", () => {
@@ -68,7 +68,7 @@ describe("detectStalledDeals", () => {
 
   it("never flags a closed deal — a Won deal that stopped moving is a sale", () => {
     const stale = { updatedAt: daysAgo(200) };
-    expect(detectStalledDeals([makeDeal({ ...stale, stage: "WON" })], NOW)).toEqual([]);
+    expect(detectStalledDeals([makeDeal({ ...stale, stage: "BUYER" })], NOW)).toEqual([]);
     expect(detectStalledDeals([makeDeal({ ...stale, stage: "LOST" })], NOW)).toEqual([]);
   });
 

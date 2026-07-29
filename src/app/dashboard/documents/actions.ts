@@ -45,6 +45,7 @@ const VALID_ENTITY_TYPES: ReadonlySet<string> = new Set<DocumentEntityType>([
   "User",
   "PaymentLedger",
   "ConstructionMilestone",
+  "Deal",
 ]);
 
 function toEntityType(raw: string): DocumentEntityType {
@@ -81,6 +82,11 @@ function revalidateDocumentViews(entityType: DocumentEntityType, entityId: strin
       break;
     case "ConstructionMilestone":
       revalidatePath("/dashboard/construction");
+      break;
+    case "Deal":
+      // The board shows a "POA missing" flag derived from what is filed
+      // against the deal, so uploading the POA has to invalidate it.
+      revalidatePath("/dashboard/pipeline");
       break;
   }
 }

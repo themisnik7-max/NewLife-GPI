@@ -4,6 +4,7 @@ import { AuditAction, recordAuditEvent, type ActorContext } from "@/lib/data/aud
 import { createActivity } from "@/lib/data/activities";
 import { isStalled, renderMessage, validateRule, type AutomationMatch, type AutomationTrigger, type RuleView } from "@/lib/automations";
 import { isKnownTrigger, triggerLabel, isKnownAction } from "@/lib/automations";
+import { CLOSED_STAGE_KEYS } from "@/lib/pipeline";
 import { Role } from "@/lib/auth/role";
 
 /**
@@ -183,7 +184,7 @@ async function findMatches(
   switch (trigger) {
     case "DEAL_STALLED": {
       const deals = await prisma.deal.findMany({
-        where: { tenantId, stage: { notIn: ["WON", "LOST"] } },
+        where: { tenantId, stage: { notIn: [...CLOSED_STAGE_KEYS] } },
         select: { id: true, title: true, updatedAt: true },
       });
       return deals
@@ -200,7 +201,7 @@ async function findMatches(
       const deals = await prisma.deal.findMany({
         where: {
           tenantId,
-          stage: { notIn: ["WON", "LOST"] },
+          stage: { notIn: [...CLOSED_STAGE_KEYS] },
           expectedCloseDate: { lt: now },
         },
         select: { id: true, title: true },
