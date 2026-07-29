@@ -87,7 +87,41 @@ function toDealStage(raw: string): DealStageKey {
   return raw;
 }
 
-function toDealView(row: DealRowWithContact, propertyNames: Map<string, string>): DealView {
+/**
+ * Which document categories are filed against each deal, in one query.
+ *
+ * `distinct` on the pair, and selecting only the category, because the board
+ * asks "is a POA on file" and never "which POA" — pulling filenames and
+ * uploader names for every card to answer a yes/no question is work whose
+ * result is discarded. Not a Prisma `include`: Document is polymorphic and
+ * has no relation to Deal, deliberately (see its schema comment).
+ */
+async function resolveDealDocumentCategories(
+  tenantId: string,
+  dealIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  if (dealIds.length === 0) return new Map();
+
+  const rows = await prisma.document.findMany({
+    where: { tenantId, entityType: "Deal", entityId: { in: [...dealIds] } },
+    select: { entityId: true, category: true },
+    distinct: ["entityId", "category"],
+  });
+
+  const byDeal = new Map<string, string[]>();
+  for (const row of rows) {
+    const existing = byDeal.get(row.entityId);
+    if (existing) existing.push(row.category);
+    else byDeal.set(row.entityId, [row.category]);
+  }
+  return byDeal;
+}
+
+function toDealView(
+  row: DealRowWithContact,
+  propertyNames: Map<string, string>,
+  documentCategories: Map<string, string[]> = new Map(),
+): DealView {
   const stage = toDealStage(row.stage);
   return {
     id: row.id,
@@ -111,6 +145,7 @@ function toDealView(row: DealRowWithContact, propertyNames: Map<string, string>)
     ownerUserId: row.ownerUserId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    documentCategories: documentCategories.get(row.id) ?? [],
   };
 }
 
@@ -146,11 +181,19 @@ export async function getDeals(tenantId: string): Promise<DealView[]> {
     select: DEAL_SELECT,
   });
 
-  const propertyNames = await resolvePropertyNames(
-    tenantId,
-    rows.map((row) => row.propertyId),
+  const [propertyNames, documentCategories] = await Promise.all([
+    resolvePropertyNames(
+      tenantId,
+      rows.map((row) => row.propertyId),
+    ),
+    resolveDealDocumentCategories(
+      tenantId,
+      rows.map((row) => row.id),
+    ),
+  ]);
+  return (rows as DealRowWithContact[]).map((row) =>
+    toDealView(row, propertyNames, documentCategories),
   );
-  return (rows as DealRowWithContact[]).map((row) => toDealView(row, propertyNames));
 }
 
 /** Every deal for one contact, newest first — for the contact's own page. */
@@ -161,11 +204,19 @@ export async function getContactDeals(tenantId: string, contactId: string): Prom
     select: DEAL_SELECT,
   });
 
-  const propertyNames = await resolvePropertyNames(
-    tenantId,
-    rows.map((row) => row.propertyId),
+  const [propertyNames, documentCategories] = await Promise.all([
+    resolvePropertyNames(
+      tenantId,
+      rows.map((row) => row.propertyId),
+    ),
+    resolveDealDocumentCategories(
+      tenantId,
+      rows.map((row) => row.id),
+    ),
+  ]);
+  return (rows as DealRowWithContact[]).map((row) =>
+    toDealView(row, propertyNames, documentCategories),
   );
-  return (rows as DealRowWithContact[]).map((row) => toDealView(row, propertyNames));
 }
 
 interface ContactRow {

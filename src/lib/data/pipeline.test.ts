@@ -6,6 +6,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     auditLog: { create: vi.fn() },
     property: { findMany: vi.fn(), findFirst: vi.fn() },
+    document: { findMany: vi.fn() },
     contact: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -49,6 +50,7 @@ const mockedDealCreate = vi.mocked(prisma.deal.create);
 const mockedDealUpdateMany = vi.mocked(prisma.deal.updateMany);
 const mockedDealDeleteMany = vi.mocked(prisma.deal.deleteMany);
 const mockedPropertyFindMany = vi.mocked(prisma.property.findMany);
+const mockedDocumentFindMany = vi.mocked(prisma.document.findMany);
 const mockedPropertyFindFirst = vi.mocked(prisma.property.findFirst);
 const mockedAudit = vi.mocked(prisma.auditLog.create);
 
@@ -103,6 +105,7 @@ beforeEach(() => {
   mockedDealUpdateMany.mockReset().mockResolvedValue({ count: 1 } as never);
   mockedDealDeleteMany.mockReset().mockResolvedValue({ count: 1 } as never);
   mockedPropertyFindMany.mockReset().mockResolvedValue([] as never);
+  mockedDocumentFindMany.mockReset().mockResolvedValue([] as never);
   mockedPropertyFindFirst.mockReset().mockResolvedValue({ id: PROPERTY_1 } as never);
   mockedAudit.mockReset().mockResolvedValue({} as never);
 });
@@ -159,6 +162,50 @@ describe("getDeals", () => {
     await getDeals(TENANT_A);
 
     expect(mockedPropertyFindMany).not.toHaveBeenCalled();
+  });
+
+  it("attaches the document categories filed against each deal", async () => {
+    mockedDealFindMany.mockResolvedValueOnce([DEAL_ROW] as never);
+    mockedDocumentFindMany.mockResolvedValueOnce([
+      { entityId: DEAL_1, category: "POWER_OF_ATTORNEY" },
+      { entityId: DEAL_1, category: "IDENTITY" },
+    ] as never);
+
+    const [deal] = await getDeals(TENANT_A);
+
+    expect(deal.documentCategories.sort()).toEqual(["IDENTITY", "POWER_OF_ATTORNEY"]);
+  });
+
+  it("asks only for categories, not whole documents", async () => {
+    // The board asks "is a POA on file", never "which POA" — pulling
+    // filenames and uploader names for every card would be work discarded.
+    mockedDealFindMany.mockResolvedValueOnce([DEAL_ROW] as never);
+
+    await getDeals(TENANT_A);
+
+    const call = mockedDocumentFindMany.mock.calls[0][0] as {
+      where: { tenantId: string; entityType: string };
+      select: Record<string, boolean>;
+      distinct: string[];
+    };
+    expect(call.where.tenantId).toBe(TENANT_A);
+    expect(call.where.entityType).toBe("Deal");
+    expect(Object.keys(call.select).sort()).toEqual(["category", "entityId"]);
+    expect(call.distinct).toEqual(["entityId", "category"]);
+  });
+
+  it("gives a deal with no documents an empty list, not undefined", async () => {
+    mockedDealFindMany.mockResolvedValueOnce([DEAL_ROW] as never);
+
+    const [deal] = await getDeals(TENANT_A);
+
+    expect(deal.documentCategories).toEqual([]);
+  });
+
+  it("skips the document lookup when there are no deals", async () => {
+    await getDeals(TENANT_A);
+
+    expect(mockedDocumentFindMany).not.toHaveBeenCalled();
   });
 
   it("throws on a stage the database should never have held", async () => {

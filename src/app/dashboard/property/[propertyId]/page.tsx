@@ -10,6 +10,11 @@ import { getSoldPropertyDetail } from "@/lib/data/portfolio";
 import { getOwnershipsForProperty } from "@/lib/data/propertyOwnership";
 import { getPropertyMilestones } from "@/lib/data/construction";
 import { ConstructionMilestones } from "@/components/ui/ConstructionMilestones";
+import { DocumentPanel } from "@/components/ui/DocumentPanel";
+import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
+import { getEntityDocuments } from "@/lib/data/documents";
+import { getRecordTimeline } from "@/lib/data/activities";
+import { isStorageConfigured } from "@/lib/storage";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { Role } from "@/lib/auth/role";
@@ -45,10 +50,16 @@ export default async function SoldPropertyPage({ params }: SoldPropertyPageProps
     notFound();
   }
 
-  const [notifications, ownerships, milestones] = await Promise.all([
+  const [notifications, ownerships, milestones, documents, timeline] = await Promise.all([
     getUserNotifications(currentUser.tenantId, currentUser.userId),
     getOwnershipsForProperty(currentUser.tenantId, params.propertyId),
     getPropertyMilestones(currentUser.tenantId, params.propertyId),
+    // getEntityDocuments / getRecordTimeline, not their client-visible
+    // counterparts: the role check at the top of this page is what licenses
+    // the admin readers, and this is the only view that may show internal
+    // files and system audit rows.
+    getEntityDocuments(currentUser.tenantId, "Property", params.propertyId),
+    getRecordTimeline(currentUser.tenantId, "Property", params.propertyId),
   ]);
 
   return (
@@ -70,6 +81,18 @@ export default async function SoldPropertyPage({ params }: SoldPropertyPageProps
           </Link>
 
           <PropertyAssetCard property={detail.property} />
+
+          {/* The sold unit is the most document-heavy record in the app —
+          contracts, deeds, handover photos — and until now had nowhere to
+          put any of them. */}
+          <DocumentPanel
+            documents={documents}
+            entityType="Property"
+            entityId={params.propertyId}
+            canManage
+            storageConfigured={isStorageConfigured()}
+            title="Contracts, deeds & photos"
+          />
 
           <section className="rounded-lg border border-stone-200 bg-stone-0 p-5 shadow-sm">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Buyers</h2>
@@ -120,7 +143,15 @@ export default async function SoldPropertyPage({ params }: SoldPropertyPageProps
           {milestones.length > 0 && (
             <section className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Construction</h2>
-              <ConstructionMilestones milestones={milestones} />
+              <ActivityTimeline
+            entries={timeline}
+            entityType="Property"
+            entityId={params.propertyId}
+            canManage
+            title="Activity & history"
+          />
+
+          <ConstructionMilestones milestones={milestones} />
             </section>
           )}
         </main>

@@ -183,6 +183,28 @@ export interface DealView {
   ownerUserId: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Document categories filed against this deal.
+   *
+   * Categories, not documents: the board only ever asks "is a POA on file",
+   * never "which POA". Carrying the full document rows would mean fetching
+   * filenames, sizes and uploader names for every card on the board to answer
+   * a yes/no question.
+   */
+  documentCategories: string[];
+}
+
+/**
+ * A deal whose stage claims paperwork that is not on file.
+ *
+ * The discrepancy the board surfaces: someone has moved a card to "Power of
+ * attorney" but no POA has been uploaded. Not an error — the deal may
+ * legitimately be there in the business's judgement, and the document may be
+ * sitting in someone's inbox. The system's job is to say the file is
+ * incomplete, not to argue about it.
+ */
+export function isMissingRequiredDocument(deal: DealView): boolean {
+  return !hasRequiredDocument(deal.stage, deal.documentCategories);
 }
 
 export interface ContactView {

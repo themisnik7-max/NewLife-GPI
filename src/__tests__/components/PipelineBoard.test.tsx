@@ -46,6 +46,7 @@ function makeDeal(overrides: Partial<DealView> = {}): DealView {
     ownerUserId: "user_admin",
     createdAt: "2026-07-01T00:00:00.000Z",
     updatedAt: "2026-07-01T00:00:00.000Z",
+    documentCategories: [],
     ...overrides,
   };
 }
@@ -124,6 +125,45 @@ describe("board layout", () => {
     renderBoard([makeDeal({ value: null })]);
 
     expect(screen.getByText("No value set")).toBeInTheDocument();
+  });
+});
+
+describe("stage paperwork", () => {
+  it("flags a deal whose stage claims a document that is not on file", () => {
+    renderBoard([
+      makeDeal({ stage: "POWER_OF_ATTORNEY", stageLabel: "Power of attorney", documentCategories: [] }),
+    ]);
+
+    expect(screen.getByText("Power of attorney not on file")).toBeInTheDocument();
+  });
+
+  it("clears the flag once the document is uploaded", () => {
+    renderBoard([
+      makeDeal({
+        stage: "POWER_OF_ATTORNEY",
+        stageLabel: "Power of attorney",
+        documentCategories: ["POWER_OF_ATTORNEY"],
+      }),
+    ]);
+
+    expect(screen.queryByText(/not on file/)).not.toBeInTheDocument();
+  });
+
+  it("does not flag an early stage, which needs no paperwork", () => {
+    renderBoard([makeDeal({ stage: "LEAD", documentCategories: [] })]);
+
+    expect(screen.queryByText(/not on file/)).not.toBeInTheDocument();
+  });
+
+  it("still lets the card be dragged — the flag is a warning, not a block", async () => {
+    // Blocking would make backfilling historical deals impossible, and would
+    // get worked around by mis-staging the card, which is worse.
+    renderBoard([makeDeal({ id: "d1", stage: "LEAD", documentCategories: [] })]);
+
+    dragCardTo("2-bed in Athens", /Power of attorney/, "d1");
+
+    await waitFor(() => expect(mockedMove).toHaveBeenCalledTimes(1));
+    expect(mockedMove.mock.calls[0][1]).toBe("POWER_OF_ATTORNEY");
   });
 });
 

@@ -3,10 +3,12 @@
 import { useState, type DragEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Building2, CalendarDays, Plus, Trash2, TrendingUp, UserCheck } from "lucide-react";
+import { Building2, CalendarDays, FileWarning, Plus, Trash2, TrendingUp, UserCheck } from "lucide-react";
 import {
   WON_STAGE,
   isClosedStage,
+  isMissingRequiredDocument,
+  requiredDocumentFor,
   DEAL_STAGES,
   OPEN_DEAL_STAGES,
   buildStageColumns,
@@ -16,6 +18,7 @@ import {
   type DealStageKey,
   type DealView,
 } from "@/lib/pipeline";
+import { categoryLabelFor } from "@/lib/documents";
 import { formatCurrency } from "@/lib/format";
 import { AdminError, ADMIN_FIELD_CLASS, useAdminAction } from "@/components/ui/adminControls";
 import { createDealAction, deleteDealAction, moveDealAction } from "@/app/dashboard/pipeline/actions";
@@ -34,6 +37,11 @@ import { createDealAction, deleteDealAction, moveDealAction } from "@/app/dashbo
  * then reconciles with whatever the server actually holds, which also
  * corrects the board if another admin moved something concurrently.
  */
+
+function requiredDocumentLabel(stageKey: string): string {
+  const category = requiredDocumentFor(stageKey);
+  return category ? categoryLabelFor(category) : "Document";
+}
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
@@ -267,6 +275,18 @@ export function PipelineBoard({ deals, contacts, properties }: PipelineBoardProp
                         <p className="mt-1 flex items-center gap-1.5 text-xs text-stone-500">
                           <Building2 size={11} aria-hidden="true" />
                           {deal.propertyName}
+                        </p>
+                      )}
+
+                      {/* The stage claims paperwork that is not on file.
+                      Deliberately a flag and not a block — the deal may
+                      legitimately be at this stage while the document sits
+                      in someone's inbox, and refusing the move would just
+                      get worked around by mis-staging the card. */}
+                      {isMissingRequiredDocument(deal) && (
+                        <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800">
+                          <FileWarning size={11} aria-hidden="true" />
+                          {requiredDocumentLabel(deal.stage)} not on file
                         </p>
                       )}
 
