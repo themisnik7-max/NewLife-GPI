@@ -10,6 +10,9 @@ import { getClientVisibleDocuments } from "@/lib/data/documents";
 import { getClientVisibleTimeline } from "@/lib/data/activities";
 import { DocumentPanel } from "@/components/ui/DocumentPanel";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
+import { RecordSalePanel } from "./RecordSalePanel";
+import { getActiveProjects } from "@/lib/data/projects";
+import { getClientDirectory } from "@/lib/data/clients";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
@@ -40,6 +43,13 @@ export default async function PropertyPage() {
       ? getClientPropertySnapshot(currentUser.tenantId, currentUser.userId)
       : Promise.resolve({ property: null }),
   ]);
+
+  // Only the admin branch renders the record-sale dialog, so only it pays for
+  // the pickers' data. A client visiting this page must not be billed a
+  // roster query for a control they never see.
+  const [saleProperties, saleClients] = currentUser && isAdmin
+    ? await Promise.all([getActiveProjects(currentUser.tenantId), getClientDirectory(currentUser.tenantId)])
+    : [[], []];
 
   /**
    * The client's own files, in two parts: those filed against them personally
@@ -86,7 +96,13 @@ export default async function PropertyPage() {
         />
         <main className="flex-1 space-y-6 bg-stone-50 p-8">
           {isAdmin ? (
-            <SoldPropertiesTable properties={soldProperties} />
+            <>
+              <RecordSalePanel
+                properties={saleProperties.map((p) => ({ id: p.id, name: p.name, area: p.area }))}
+                clients={saleClients.map((c) => ({ id: c.id, name: c.name, email: c.email }))}
+              />
+              <SoldPropertiesTable properties={soldProperties} />
+            </>
           ) : (
             <>
               {snapshot.property ? (

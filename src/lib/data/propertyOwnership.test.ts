@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   assignPropertyToClient,
+  recordSale,
   getClientPropertySnapshot,
   getOwnershipsForProperty,
   updateSaleDetails,
@@ -392,5 +393,111 @@ describe("updateSaleDetails", () => {
     await expect(updateSaleDetails(ACTOR_A, "ownership-1", { salePrice: -5 })).rejects.toThrow(
       /positive, finite number/,
     );
+  });
+});
+
+describe("recordSale (the one-step flow)", () => {
+  const USER_1 = "user_maria";
+
+  beforeEach(() => {
+    mockedPropertyFindFirst.mockResolvedValue({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValue({ id: USER_1 } as never);
+    mockedOwnershipCreate.mockResolvedValue({ id: "own-1" } as never);
+    mockedOwnershipUpdateMany.mockResolvedValue({ count: 1 } as never);
+  });
+
+  it("creates the ownership WITH its sale details in one write", async () => {
+    // The whole point: this replaced create-property -> assign -> price,
+    // which was three pages for one business event.
+    mockedFindFirst.mockResolvedValueOnce(null as never);
+
+    await recordSale(ACTOR_A, USER_1, PROPERTY_1, { saleDate: "2026-06-01", salePrice: 250000 });
+
+    const { data } = mockedOwnershipCreate.mock.calls[0][0] as {
+      data: { tenantId: string; userId: string; propertyId: string; salePrice: number; saleDate: Date };
+    };
+    expect(data.tenantId).toBe(TENANT_A);
+    expect(data.userId).toBe(USER_1);
+    expect(data.propertyId).toBe(PROPERTY_1);
+    expect(data.salePrice).toBe(250000);
+    expect(data.saleDate).toEqual(new Date("2026-06-01"));
+  });
+
+  it("verifies BOTH the property and the buyer belong to the tenant first", async () => {
+    // Prisma bypasses RLS, so a crafted request naming another tenant's
+    // property would otherwise succeed.
+    mockedPropertyFindFirst.mockResolvedValueOnce(null as never);
+    await expect(recordSale(ACTOR_A, USER_1, PROPERTY_1, {})).rejects.toThrow(
+      /Property .* was not found for tenant/,
+    );
+
+    mockedPropertyFindFirst.mockResolvedValue({ id: PROPERTY_1 } as never);
+    mockedUserFindFirst.mockResolvedValueOnce(null as never);
+    await expect(recordSale(ACTOR_A, USER_1, PROPERTY_1, {})).rejects.toThrow(
+      /User .* was not found for tenant/,
+    );
+
+    expect(mockedOwnershipCreate).not.toHaveBeenCalled();
+  });
+
+  it("updates the sale details instead of dropping them when the buyer already owns the unit", async () => {
+    // assignPropertyToClient returns early and silently on an existing
+    // ownership, which would send the price and date to the floor. That
+    // early return is right for its own purpose and wrong for this one.
+    mockedFindFirst.mockResolvedValueOnce({ id: "own-1" } as never);
+    mockedFindFirst.mockResolvedValueOnce({
+      id: "own-1",
+      saleDate: null,
+      salePrice: null,
+    } as never);
+
+    await recordSale(ACTOR_A, USER_1, PROPERTY_1, { salePrice: 300000 });
+
+    expect(mockedOwnershipCreate).not.toHaveBeenCalled();
+    expect(mockedOwnershipUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { salePrice: 300000 } }),
+    );
+  });
+
+  it("rejects a future sale date — this records what happened, not what is planned", async () => {
+    const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    await expect(
+      recordSale(ACTOR_A, USER_1, PROPERTY_1, { saleDate: nextYear }),
+    ).rejects.toThrow(/cannot be in the future/);
+    expect(mockedOwnershipCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-positive price", async () => {
+    await expect(
+      recordSale(ACTOR_A, USER_1, PROPERTY_1, { salePrice: 0 }),
+    ).rejects.toThrow(/positive/);
+  });
+
+  it("accepts a sale with neither price nor date — both are real gaps", async () => {
+    mockedFindFirst.mockResolvedValueOnce(null as never);
+
+    await recordSale(ACTOR_A, USER_1, PROPERTY_1, { saleDate: null, salePrice: null });
+
+    const { data } = mockedOwnershipCreate.mock.calls[0][0] as {
+      data: { salePrice: number | null; saleDate: Date | null };
+    };
+    expect(data.salePrice).toBeNull();
+    expect(data.saleDate).toBeNull();
+  });
+
+  it("audits a new sale as a CREATE, tagged so it is distinguishable later", async () => {
+    mockedFindFirst.mockResolvedValueOnce(null as never);
+
+    await recordSale(ACTOR_A, USER_1, PROPERTY_1, { salePrice: 250000 });
+
+    const { data } = vi.mocked(prisma.auditLog.create).mock.calls[0][0] as {
+      data: { action: string; entityType: string; metadata: Record<string, unknown> };
+    };
+    expect(data.action).toBe("CREATE");
+    expect(data.entityType).toBe("PropertyOwnership");
+    // A sale recorded in one action and an assignment later priced look
+    // identical in the row otherwise.
+    expect(data.metadata.via).toBe("record_sale");
   });
 });
