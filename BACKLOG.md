@@ -12,7 +12,26 @@ they **block use of what already exists** or **extend it**.
 
 ## 0. BLOCKERS — nothing new works until these are done
 
-### 0.1 Migrations 0010–0014 are not applied
+> **Status 2026-07-30.** Phase A is complete in code (A1-A5 shipped). Both
+> blockers below remain, and BOTH are now the owner's to clear — the
+> assistant has no way to do either. Until they are, the live app is
+> unchanged from where it started.
+>
+> ### 0.0 File storage is NOT configured — uploads will fail
+>
+> `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are absent from `.env` and
+> `.env.local`; they appear only in `.env.example`. `isStorageConfigured()`
+> therefore returns false, and every Files panel renders "File storage is not
+> configured" instead of an upload control.
+>
+> This matters because uploading PDFs and images was an explicit requirement.
+> The document tables and UI are built and tested, but **no file can actually
+> be stored until these two variables are set and a PRIVATE Supabase bucket
+> named `rental-documents` exists** (Storage → New bucket, "Public bucket"
+> OFF). The feature degrades honestly rather than erroring, which is why it is
+> easy to miss.
+
+### 0.1 Migrations 0010–0015 are not applied
 
 `prisma/schema.prisma` and the generated client are ahead of the live database.
 Five migrations exist in `supabase/migrations/` and have **never been run**:
@@ -24,6 +43,13 @@ Five migrations exist in `supabase/migrations/` and have **never been run**:
 | `0012_saved_views.sql` | `saved_views` |
 | `0013_pipeline.sql` | `contacts`, `deals` |
 | `0014_automation_rules.sql` | `automation_rules` |
+| `0015_pipeline_real_funnel.sql` | rewrites `deals.stage` (see 4.4 D2) |
+
+`scripts/apply-migrations.mjs` applies them in order over `DIRECT_URL`,
+stopping at the first failure and naming it. `node scripts/apply-migrations.mjs
+--dry-run` lists what would run; `--from 0010` skips the nine already applied.
+The assistant cannot run it — the sandbox blocks writing schema changes to a
+live database, correctly.
 
 **Consequence, stated precisely:** every page whose loader touches one of these
 tables fails at request time, because Prisma issues a query against a relation

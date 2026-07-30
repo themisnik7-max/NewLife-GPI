@@ -11,6 +11,7 @@ import { getClientVisibleTimeline } from "@/lib/data/activities";
 import { DocumentPanel } from "@/components/ui/DocumentPanel";
 import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
 import { RecordSalePanel } from "./RecordSalePanel";
+import { ImportSalesPanel } from "./ImportSalesPanel";
 import { getActiveProjects } from "@/lib/data/projects";
 import { getClientDirectory } from "@/lib/data/clients";
 import { markNotificationReadAction } from "@/app/actions/notifications";
@@ -101,6 +102,7 @@ export default async function PropertyPage() {
                 properties={saleProperties.map((p) => ({ id: p.id, name: p.name, area: p.area }))}
                 clients={saleClients.map((c) => ({ id: c.id, name: c.name, email: c.email }))}
               />
+              <ImportSalesPanel />
               <SoldPropertiesTable properties={soldProperties} />
             </>
           ) : (
