@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Bell, Search } from "lucide-react";
+import { Bell } from "lucide-react";
 import type { NotificationEntry } from "@/lib/data/notifications";
+import { CommandPalette } from "@/components/ui/CommandPalette";
 
 export interface TopNavProps {
   title: string;
@@ -12,6 +13,14 @@ export interface TopNavProps {
   userInitials: string;
   notifications?: NotificationEntry[];
   onMarkNotificationRead?: (notificationId: string) => void;
+  /**
+   * Renders the global search palette. Admin-only, because searchTenant()
+   * crosses every record in the tenant at once — there is deliberately no
+   * client-facing counterpart (see src/lib/data/search.ts). searchAction
+   * re-checks the role server-side regardless, so this prop controls what is
+   * shown, not what is permitted.
+   */
+  isAdmin?: boolean;
 }
 
 const notificationDateFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -28,8 +37,8 @@ export function TopNav({
   userInitials,
   notifications = [],
   onMarkNotificationRead,
+  isAdmin = false,
 }: TopNavProps) {
-  const [query, setQuery] = useState("");
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const unreadCount = notifications.filter((notification) => !notification.read).length;
 
@@ -41,21 +50,11 @@ export function TopNav({
       </div>
 
       <div className="flex flex-1 items-center justify-end gap-4">
-        <label className="relative w-full max-w-xs">
-          <span className="sr-only">Search</span>
-          <Search
-            size={16}
-            aria-hidden="true"
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"
-          />
-          <input
-            type="text"
-            placeholder="Search clients, properties…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-full rounded-md border border-stone-300 bg-stone-0 py-2 pl-9 pr-3 text-sm text-stone-900 placeholder:text-stone-400 focus:border-aegean-500 focus:outline-none focus:ring-2 focus:ring-aegean-100"
-          />
-        </label>
+        {/* Replaced a text input that held local state and did nothing with
+        it — no submit handler, no query, no results. A search box that
+        silently discards what you type is worse than no search box, because
+        it advertises a capability the product did not have. */}
+        {isAdmin && <CommandPalette />}
 
         <div className="relative">
           <button

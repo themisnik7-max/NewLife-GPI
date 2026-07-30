@@ -2,6 +2,9 @@ import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
 import { MetricsDashboard } from "@/components/ui/MetricsDashboard";
 import { ClientOverviewSummary } from "@/components/ui/ClientOverviewSummary";
+import { OpenTasksPanel } from "@/components/ui/OpenTasksPanel";
+import { InsightPanel } from "@/components/ui/InsightPanel";
+import { getOpenTasks } from "@/lib/data/activities";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { getTenantMetrics } from "@/lib/data/metrics";
@@ -52,6 +55,7 @@ export default async function DashboardPage() {
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin={isAdmin}
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           {/* "Invite Client" moved to /dashboard/clients along with the
@@ -65,8 +69,22 @@ export default async function DashboardPage() {
 }
 
 async function AdminOverview({ tenantId }: { tenantId: string }) {
-  const metrics = await getTenantMetrics(tenantId);
-  return <MetricsDashboard metrics={metrics} />;
+  // Tenant-wide, admin-only: "what needs doing across the business" is the
+  // question this screen exists to answer, so getOpenTasks() takes no user
+  // filter. A per-user variant would be its own function, per the
+  // two-function rule — there is no task assignment column yet, so it does
+  // not exist rather than being faked with the author's id.
+  const [metrics, openTasks] = await Promise.all([getTenantMetrics(tenantId), getOpenTasks(tenantId)]);
+
+  return (
+    <div className="space-y-4">
+      <MetricsDashboard metrics={metrics} />
+      {/* Renders inert until the admin clicks Analyse — the AI call bills
+      the tenant's own key, so it must be a deliberate act, not a page load. */}
+      <InsightPanel mode="pipeline" />
+      <OpenTasksPanel tasks={openTasks} />
+    </div>
+  );
 }
 
 async function OwnOverview({ tenantId, userId }: { tenantId: string; userId: string }) {

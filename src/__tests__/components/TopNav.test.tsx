@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+// TopNav renders CommandPalette, which imports a "use server" module. Next
+// turns those into client references at build time; vitest resolves the real
+// file and hits its `server-only` guard, so it is stubbed here.
+vi.mock("@/app/dashboard/search/actions", () => ({ searchAction: vi.fn() }));
+// CommandPalette navigates on selection, so it calls useRouter().
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
 import { TopNav } from "@/components/ui/TopNav";
 import type { NotificationEntry } from "@/lib/data/notifications";
 
@@ -26,15 +33,20 @@ describe("TopNav", () => {
     expect(screen.getByText("MP")).toBeInTheDocument();
   });
 
-  it("shows a visible, editable search input", async () => {
-    const user = userEvent.setup();
+  it("offers the global search palette to an admin", () => {
+    // Replaces an assertion that the old text input held what you typed. It
+    // did — and then discarded it: there was no submit handler and no query.
+    render(<TopNav title="Overview" userName="Themis" userInitials="TN" isAdmin />);
+
+    expect(screen.getByRole("button", { name: /Search/ })).toBeVisible();
+  });
+
+  it("shows no search to a client — there is no client-facing search path", () => {
+    // searchTenant() crosses every record in the tenant at once and has no
+    // client-scoped counterpart by design (see src/lib/data/search.ts).
     render(<TopNav title="Overview" userName="Maria Papadopoulos" userInitials="MP" />);
 
-    const search = screen.getByPlaceholderText("Search clients, properties…");
-    expect(search).toBeVisible();
-
-    await user.type(search, "Villa Elytra");
-    expect(search).toHaveValue("Villa Elytra");
+    expect(screen.queryByRole("button", { name: /Search/ })).not.toBeInTheDocument();
   });
 
   it("shows a visible notifications button with an unread count badge, counting only unread ones", () => {

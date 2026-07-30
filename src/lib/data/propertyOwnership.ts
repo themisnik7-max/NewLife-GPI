@@ -134,6 +134,93 @@ function validateSaleDetails(input: SaleDetailsInput): void {
   }
 }
 
+/**
+ * Records a completed sale in one call: buyer, unit, price and date.
+ *
+ * ⚠️ WHY THIS EXISTS RATHER THAN REUSING THE TWO FUNCTIONS BELOW. Recording a
+ * sale previously took three pages — create the property under Available
+ * Projects, open the buyer's profile to assign it, then return to the
+ * property to set price and date. That is one business event spread across
+ * three screens, and it is the thing the business owner actually hit and
+ * could not do.
+ *
+ * assignPropertyToClient() cannot be used alone for it: it returns early and
+ * silently when an ownership already exists, so re-running it against a
+ * buyer who already holds the unit would drop the price and date on the
+ * floor. That early return is right for its own purpose — it stops a double
+ * click writing phantom "assigned" audit rows — and wrong for this one.
+ *
+ * So this function handles both paths explicitly: create the ownership with
+ * its sale details when there is none, update the details when there is. The
+ * two are audited differently on purpose — a CREATE is a new sale, a field
+ * change is a correction, and collapsing them would make "when did we sell
+ * this" unanswerable from the trail.
+ */
+export async function recordSale(
+  actor: ActorContext,
+  userId: string,
+  propertyId: string,
+  sale: SaleDetailsInput,
+): Promise<void> {
+  const tenantId = actor.tenantId;
+  validateSaleDetails(sale);
+
+  // Both referenced entities verified against the caller's tenant BEFORE any
+  // write — the rule in ARCHITECTURE.md. Prisma bypasses RLS, so a crafted
+  // request naming another tenant's property would otherwise succeed.
+  const [property, user] = await Promise.all([
+    prisma.property.findFirst({ where: { id: propertyId, tenantId }, select: { id: true } }),
+    prisma.user.findFirst({ where: { id: userId, tenantId }, select: { id: true } }),
+  ]);
+  if (!property) {
+    throw new Error(`Property ${propertyId} was not found for tenant ${tenantId}.`);
+  }
+  if (!user) {
+    throw new Error(`User ${userId} was not found for tenant ${tenantId}.`);
+  }
+
+  const existing = await prisma.propertyOwnership.findFirst({
+    where: { userId, propertyId, tenantId },
+    select: { id: true },
+  });
+
+  if (existing) {
+    // Already owns it — this is a correction to the commercial facts, not a
+    // new sale. updateSaleDetails writes one audit row per changed field.
+    await updateSaleDetails(actor, existing.id, sale);
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const ownership = await tx.propertyOwnership.create({
+      data: {
+        tenantId,
+        userId,
+        propertyId,
+        saleDate: sale.saleDate ? new Date(sale.saleDate) : null,
+        salePrice: sale.salePrice ?? null,
+      },
+    });
+
+    await recordAuditEvent(tx, {
+      tenantId,
+      actorUserId: actor.actorUserId,
+      entityType: "PropertyOwnership",
+      entityId: ownership.id,
+      action: AuditAction.CREATE,
+      metadata: {
+        userId,
+        propertyId,
+        saleDate: sale.saleDate ?? null,
+        salePrice: sale.salePrice ?? null,
+        // Distinguishes a sale recorded in one action from an assignment that
+        // was later priced — the two look identical in the row otherwise.
+        via: "record_sale",
+      },
+    });
+  });
+}
+
 export async function assignPropertyToClient(
   actor: ActorContext,
   userId: string,

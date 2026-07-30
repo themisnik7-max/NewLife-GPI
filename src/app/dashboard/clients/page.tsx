@@ -3,10 +3,11 @@ import { notFound } from "next/navigation";
 import { UserPlus } from "lucide-react";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { TopNav } from "@/components/ui/TopNav";
-import { ClientDirectory } from "@/components/ui/ClientDirectory";
+import { ClientRoster } from "./ClientRoster";
 import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getUserNotifications } from "@/lib/data/notifications";
 import { getClientDirectory } from "@/lib/data/clients";
+import { getSavedViews } from "@/lib/data/savedViews";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
@@ -29,9 +30,12 @@ export default async function ClientsPage() {
     notFound();
   }
 
-  const [clients, notifications] = await Promise.all([
+  const [clients, notifications, savedViews] = await Promise.all([
     getClientDirectory(currentUser.tenantId),
     getUserNotifications(currentUser.tenantId, currentUser.userId),
+    // Scoped to this admin's own saved views — see src/lib/data/savedViews.ts
+    // on why these are personal rather than shared across the tenant.
+    getSavedViews(currentUser.tenantId, currentUser.userId, "clients"),
   ]);
 
   return (
@@ -45,6 +49,7 @@ export default async function ClientsPage() {
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin
         />
         <main className="flex-1 space-y-4 bg-stone-50 p-8">
           <div className="flex justify-end">
@@ -60,7 +65,7 @@ export default async function ClientsPage() {
               Invite Client
             </Link>
           </div>
-          <ClientDirectory clients={clients} />
+          <ClientRoster clients={clients} savedViews={savedViews} />
         </main>
       </div>
     </div>

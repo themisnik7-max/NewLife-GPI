@@ -7,6 +7,11 @@ import { getCurrentUser } from "@/lib/auth/currentTenant";
 import { getProjectById } from "@/lib/data/projects";
 import { getPropertyMilestones } from "@/lib/data/construction";
 import { getUserNotifications } from "@/lib/data/notifications";
+import { getClientVisibleDocuments, getEntityDocuments } from "@/lib/data/documents";
+import { getClientVisibleTimeline, getRecordTimeline } from "@/lib/data/activities";
+import { DocumentPanel } from "@/components/ui/DocumentPanel";
+import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
+import { isStorageConfigured } from "@/lib/storage";
 import { markNotificationReadAction } from "@/app/actions/notifications";
 import { Role } from "@/lib/auth/role";
 
@@ -35,6 +40,26 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
   const milestones =
     isAdmin && currentUser ? await getPropertyMilestones(currentUser.tenantId, project.id) : [];
 
+  // This route is shared by both roles, so it is the two-function rule from
+  // ARCHITECTURE.md at its most literal: an admin gets every file on the
+  // property, a client gets only the ones deliberately shared. Choosing the
+  // reader here — rather than passing `isAdmin` into one function that
+  // branches internally — is what makes the leak impossible to introduce by
+  // forgetting an argument.
+  const [documents, timeline] = !currentUser
+    ? [[], []]
+    : await Promise.all(
+        isAdmin
+          ? [
+              getEntityDocuments(currentUser.tenantId, "Property", project.id),
+              getRecordTimeline(currentUser.tenantId, "Property", project.id),
+            ]
+          : [
+              getClientVisibleDocuments(currentUser.tenantId, "Property", project.id),
+              getClientVisibleTimeline(currentUser.tenantId, "Property", project.id),
+            ],
+      );
+
   return (
     <div className="flex min-h-screen">
       <Sidebar activeKey="projects" client={{ property: currentUser?.email ?? "" }} isAdmin={isAdmin} />
@@ -46,9 +71,24 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
           userInitials={currentUser?.initials ?? ""}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin={isAdmin}
         />
         <main className="flex-1 space-y-6 bg-stone-50 p-8">
           <PropertyDetailWithEdit project={project} isAdmin={isAdmin} />
+          <DocumentPanel
+            documents={documents}
+            entityType="Property"
+            entityId={project.id}
+            canManage={isAdmin}
+            storageConfigured={isStorageConfigured()}
+            title="Documents & progress photos"
+          />
+          <ActivityTimeline
+            entries={timeline}
+            entityType="Property"
+            entityId={project.id}
+            canManage={isAdmin}
+          />
           {isAdmin && <MilestoneAdminPanel propertyId={project.id} milestones={milestones} />}
         </main>
       </div>

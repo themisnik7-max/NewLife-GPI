@@ -33,6 +33,7 @@ export default async function TeamPage() {
           userInitials={currentUser.initials}
           notifications={notifications}
           onMarkNotificationRead={markNotificationReadAction}
+          isAdmin
         />
         <main className="flex-1 bg-stone-50 p-8">
           <TeamOrganizationPanel />
